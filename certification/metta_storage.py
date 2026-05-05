@@ -12,6 +12,7 @@ from hyperon import MeTTa, ExpressionAtom, SymbolAtom
 
 from certification.certificate_schema import Certificate
 from certification.metta_bridge import atom_to_cert, cert_to_atom, parse_atom, serialize_atom
+from utils.cone_utils import validate_simplex_weights
 
 
 class CertificateStore:
@@ -58,7 +59,7 @@ class CertificateStore:
         CDS certificates are globally admitted under valid simplex constraints.
         PDS certificates are checked with: delta_r + w^T delta_n >= -epsilon.
         """
-        w = self._validate_simplex_weights(weights)
+        w = self._validated_weights_array(weights)
         results: list[Certificate] = []
 
         for cert in self.load_all():
@@ -151,17 +152,15 @@ class CertificateStore:
         return None
 
     @staticmethod
-    def _validate_simplex_weights(weights: list[float]) -> np.ndarray:
-        """Validate 2D simplex weights used in this phase."""
+    def _validated_weights_array(weights: list[float]) -> np.ndarray:
+        """Validate and return a 2D simplex weight array for this phase."""
         if weights is None:
             raise ValueError("weights must not be None")
         arr = np.asarray(weights, dtype=float)
         if arr.shape != (2,):
             raise ValueError(f"weights must be a length-2 vector, got shape {arr.shape}")
-        if not np.all(np.isfinite(arr)):
-            raise ValueError(f"weights must contain finite values, got {arr}")
-        if np.any(arr < -1e-8):
-            raise ValueError(f"weights must be non-negative, got {arr}")
-        if not np.isclose(np.sum(arr), 1.0, atol=1e-6):
-            raise ValueError(f"weights must sum to 1.0, got sum={float(np.sum(arr))}")
+        if not validate_simplex_weights(arr):
+            raise ValueError(
+                "weights must be a valid simplex vector (finite, non-negative, sum to 1)"
+            )
         return arr
