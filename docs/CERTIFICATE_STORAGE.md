@@ -105,6 +105,8 @@ Behavior policies:
   - non-negative
   - sum approximately 1
 - Invalid weights raise `ValueError`.
+- Weight validity checks are centralized via
+  `utils.cone_utils.validate_simplex_weights`.
 - `load_from_file(path)` replaces current store content.
 
 Testing note:
