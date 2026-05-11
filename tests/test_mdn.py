@@ -12,7 +12,7 @@ def test_mdn_single_input_shape():
     model = MotiveDecompositionNetwork()
     context = torch.randn(14)
 
-    weight_params, support_values = model(context)
+    weight_params, support_values = model(context, training=False)
 
     assert weight_params.shape == (2,)
     assert support_values.shape == (2,)
@@ -24,7 +24,7 @@ def test_mdn_batched_input_shape():
     model = MotiveDecompositionNetwork()
     context = torch.randn(5, 14)
 
-    weight_params, support_values = model(context)
+    weight_params, support_values = model(context, training=False)
 
     assert weight_params.shape == (5, 2)
     assert support_values.shape == (5, 2)
@@ -36,7 +36,7 @@ def test_mdn_dirichlet_alpha_parameters_are_strictly_positive():
     model = MotiveDecompositionNetwork()
     context = torch.randn(5, 14)
 
-    weight_params, _ = model(context)
+    weight_params, _ = model(context, training=False)
 
     assert torch.all(weight_params > 0)
 
@@ -47,7 +47,7 @@ def test_mdn_support_values_are_bounded():
     model = MotiveDecompositionNetwork()
     context = torch.randn(5, 14)
 
-    _, support_values = model(context)
+    _, support_values = model(context, training=False)
 
     assert torch.all(support_values >= 0)
     assert torch.all(support_values <= 1)
@@ -59,7 +59,7 @@ def test_mdn_outputs_are_finite():
     model = MotiveDecompositionNetwork()
     context = torch.randn(5, 14)
 
-    weight_params, support_values = model(context)
+    weight_params, support_values = model(context, training=False)
 
     assert torch.isfinite(weight_params).all()
     assert torch.isfinite(support_values).all()
@@ -71,7 +71,7 @@ def test_mdn_gradient_flow_reaches_parameters_and_input():
     model = MotiveDecompositionNetwork()
     context = torch.randn(5, 14, requires_grad=True)
 
-    weight_params, support_values = model(context)
+    weight_params, support_values = model(context, training=True)
     loss = weight_params.sum() + support_values.sum()
     loss.backward()
 
@@ -92,6 +92,6 @@ def test_mdn_heads_are_independent_modules():
     """Distribution and support predictions must come from separate heads."""
     model = MotiveDecompositionNetwork()
 
-    assert hasattr(model, "distribution_head")
+    assert hasattr(model, "dirichlet_head")
     assert hasattr(model, "support_head")
-    assert model.distribution_head is not model.support_head
+    assert model.dirichlet_head is not model.support_head
