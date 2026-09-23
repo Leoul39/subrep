@@ -112,6 +112,18 @@ class Certificate:
                     raise ValueError(f"Duplicate motive name in certificate: {name!r}")
                 seen.add(name)
 
+        # Schema identity must be all-or-none: either all three fields are
+        # provided (fully-identified artifact) or all three are None (legacy).
+        # Partial identity is uninterpretable and rejected at construction time.
+        _schema_fields = (self.domain_id, self.motive_schema_version, self.motive_names)
+        _schema_present = sum(f is not None for f in _schema_fields)
+        if _schema_present not in (0, 3):
+            raise ValueError(
+                "Schema identity must be all-or-none: provide all of "
+                "domain_id, motive_schema_version, and motive_names, or none of them. "
+                f"Got {_schema_present}/3 fields set."
+            )
+
         # Numeric invariants used by gate logic and reproducibility.
         self._validate_finite("delta_r", self.delta_r)
         self._validate_finite("admission_margin", self.admission_margin)

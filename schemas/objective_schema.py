@@ -135,25 +135,61 @@ class ObjectiveSchema:
 
 def schemas_compatible(a: ObjectiveSchema | None, b: ObjectiveSchema | None) -> bool:
     """
-    Return True when two schemas are compatible (i.e., can be compared).
+    Return True only when two *explicit* schemas are mutually compatible.
+
+    This is the **strict runtime function** used during selection, admissibility
+    checks, and query filtering.  Neither argument may be None — an artifact
+    whose schema fields are None (legacy/unknown) is considered quarantined and
+    NOT compatible with any explicit domain schema.
 
     Rules:
-        - If either schema is None (legacy / unknown), accept.
+        - If either schema is None → False (quarantined at runtime).
         - Two schemas are compatible only when domain_id,
           motive_schema_version, AND motive_names all match exactly.
         - Same length but different names → incompatible.
-        - Different lengths → incompatible (unless one is None).
+
+    Use :func:`schemas_loadable` for deserialization / migration contexts
+    where a missing schema should be accepted.
+
+    Args:
+        a: First schema.
+        b: Second schema.
+
+    Returns:
+        True if both schemas are present and identical across all fields.
+    """
+    if a is None or b is None:
+        return False
+    return (
+        a.domain_id == b.domain_id
+        and a.motive_schema_version == b.motive_schema_version
+        and a.motive_names == b.motive_names
+    )
+
+
+def schemas_loadable(a: ObjectiveSchema | None, b: ObjectiveSchema | None) -> bool:
+    """
+    Return True when two schemas are compatible for loading / deserialization.
+
+    This is the **permissive loading function** used when deserializing
+    artifacts (``Certificate.from_dict``, ``CertificateStore.load_from_file``).
+    A missing schema (None) is treated as legacy/unknown and is accepted.
+
+    Rules:
+        - If either schema is None → True (legacy artifact, accepted for loading).
+        - Otherwise identical to :func:`schemas_compatible`.
+
+    Do NOT use this function for runtime selection or admissibility filtering.
+    Use :func:`schemas_compatible` there.
 
     Args:
         a: First schema, or None for legacy artifacts.
         b: Second schema, or None for legacy artifacts.
 
     Returns:
-        True if the schemas can be compared/combined without error.
+        True if the schemas can be safely loaded / compared.
     """
     if a is None or b is None:
-        # One or both sides are legacy/unknown — accept with a warning
-        # at the call site if desired.
         return True
     return (
         a.domain_id == b.domain_id
