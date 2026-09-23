@@ -24,7 +24,8 @@ def validate_env_metadata(metadata: Dict[str, Any]) -> None:
         metadata: Dictionary containing environment metadata.
 
     Raises:
-        ValueError: If any required key is missing or has an invalid type/value.
+        ValueError: If any required key is missing, has an invalid type/value,
+                    contains empty strings, or has duplicate motive names.
     """
     if not isinstance(metadata, dict):
         raise ValueError(f"metadata must be a dict, got {type(metadata).__name__}")
@@ -38,12 +39,26 @@ def validate_env_metadata(metadata: Dict[str, Any]) -> None:
                 f"Metadata key '{key}' must be of type {expected_type.__name__}, got {type(val).__name__}"
             )
 
+    # Non-empty checks for all string-valued fields.
+    for key in ("environment_id", "motive_schema_version", "payoff_schema_version",
+                 "observation_schema_version", "action_schema_version"):
+        if not metadata[key].strip():
+            raise ValueError(f"Metadata key '{key}' must not be empty or whitespace-only")
+
+    # Motive name integrity: non-empty, non-whitespace, no duplicates.
     motive_names = metadata["motive_names"]
     if len(motive_names) == 0:
         raise ValueError("metadata['motive_names'] must be non-empty")
+    seen: set = set()
     for name in motive_names:
         if not isinstance(name, str) or not name.strip():
             raise ValueError("All entries in metadata['motive_names'] must be non-empty strings")
+        if name in seen:
+            raise ValueError(
+                f"metadata['motive_names'] contains a duplicate name: {name!r}"
+            )
+        seen.add(name)
+
 
 
 @runtime_checkable
