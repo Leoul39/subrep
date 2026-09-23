@@ -11,15 +11,16 @@ import numpy as np
 class IdlePolicy:
     """A simple baseline policy that always selects the idle action."""
 
-    def __init__(self, env: Any, idle_action: int = 0, gamma: float = 0.99) -> None:
+    def __init__(self, env: Any, idle_action: Any = 0, gamma: float = 0.99, strict: bool = False) -> None:
         if not (0.0 <= gamma <= 1.0):
             raise ValueError("gamma must be in [0, 1]")
 
         self.env = env
-        self.idle_action = int(idle_action)
+        self.idle_action = idle_action  # Any type accepted (int, str, etc.)
         self.gamma = float(gamma)
+        self.strict = strict
 
-    def get_action(self, obs) -> int:
+    def get_action(self, obs) -> Any:
         """Return the deterministic do-nothing action."""
         return self.idle_action
 
@@ -43,6 +44,12 @@ class IdlePolicy:
                 if len(step_out) == 5:
                     obs, reward_vec, terminated, truncated, info = step_out
                 elif len(step_out) == 4:
+                    if self.strict:
+                        raise ValueError(
+                            "strict=True: environment step() returned a 4-tuple; "
+                            "SubRepBaseEnv requires a 5-tuple "
+                            "(obs, motives, terminated, truncated, info)."
+                        )
                     obs, reward_vec, terminated, info = step_out
                     truncated = False
                 else:
@@ -60,6 +67,11 @@ class IdlePolicy:
                 if "task_payoff" in info:
                     step_payoff = float(info["task_payoff"])
                 else:
+                    if self.strict:
+                        raise ValueError(
+                            "strict=True: environment step() info dict is missing 'task_payoff'; "
+                            "all SubRepBaseEnv-conforming environments must set info['task_payoff']."
+                        )
                     warnings.warn(
                         "Environment step info missing 'task_payoff'; falling back to sum(reward_vec)",
                         RuntimeWarning,
@@ -94,7 +106,7 @@ class IdlePolicy:
             "num_episodes": int(num_episodes),
             "seed": int(seed),
             "gamma": float(self.gamma),
-            "idle_action": int(self.idle_action),
+            "idle_action": self.idle_action,
         }
 
     def _reset_env(self, seed: int):

@@ -73,8 +73,13 @@ class SubRepEnv:
         fuel = -(raw_rewards[2] + raw_rewards[3])
         return np.array([safety, fuel], dtype=np.float32)
 
-    def reset(self, seed=None):
-        """Reset the environment and return initial observation."""
+    def reset(self, seed=None, options=None):
+        """Reset the environment and return initial observation.
+
+        The ``options`` parameter is accepted for protocol compatibility
+        and is currently unused (passed through to the underlying env
+        if it supports it, silently ignored otherwise).
+        """
         # Only update the stored seed when the caller explicitly provides one.
         # Otherwise Gym continues from its current RNG stream, so repeated
         # `reset()` calls are stochastic instead of replaying one start state.
@@ -121,10 +126,10 @@ class SubRepEnv:
         return {
             "environment_id": "subrep_lunarlander_v1",
             "motive_names": ["Safety", "Fuel"],
-            "motive_schema_version": "1.0.0",
-            "payoff_schema_version": "1.0.0",
-            "observation_schema_version": "1.0.0",
-            "action_schema_version": "1.0.0",
+            "motive_schema_version": "1.0",
+            "payoff_schema_version": "1.0",
+            "observation_schema_version": "1.0",
+            "action_schema_version": "1.0",
         }
 
     def close(self):
