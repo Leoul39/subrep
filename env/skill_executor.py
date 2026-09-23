@@ -7,9 +7,49 @@ discounted rollout summaries needed by later certification stages.
 
 from __future__ import annotations # Used for forward type references in Python 3.7+ without string literals.
 import copy
-from typing import Callable, Optional
+from dataclasses import dataclass
+from typing import Callable, Iterator, Optional
 import warnings
 import numpy as np
+
+
+@dataclass(frozen=True)
+class ExecutionResult:
+    """
+    Structured result returned by :meth:`SkillExecutor.run_episode`.
+
+    Attributes:
+        total_payoff: Discounted sum of scalar task payoffs over the episode.
+        motive_deltas: Discounted cumulative N-dimensional motive vector.
+        terminated: True when the episode ended in a natural terminal state.
+        steps: Number of environment steps executed.
+        stop_reason: One of ``'terminated'``, ``'truncated'``, ``'max_steps'``,
+                     or ``'unknown'``.
+        motive_names: Ordered list of motive dimension labels from env metadata,
+                      or ``None`` when the environment exposes no metadata.
+        behavior_probability: Probability of the chosen action under the policy,
+                              or ``None`` when the policy does not report it.
+
+    Backward-compatibility note:
+        ``ExecutionResult`` supports 3-tuple unpacking so that existing code
+        using ``payoff, motives, done = executor.run_episode()`` continues to
+        work without modification.
+    """
+
+    total_payoff: float
+    motive_deltas: np.ndarray
+    terminated: bool
+    steps: int
+    stop_reason: str
+    motive_names: list[str] | None
+    behavior_probability: float | None
+
+    def __iter__(self) -> Iterator:
+        """Yield (total_payoff, motive_deltas, terminated) for tuple-unpack compat."""
+        yield self.total_payoff
+        yield self.motive_deltas
+        yield self.terminated
+
 
 class SkillExecutor:
     """
@@ -17,6 +57,8 @@ class SkillExecutor:
     - `total_payoff` defaults to discounted sum of reward_vector.sum().
     This scalarization is a practical default and can be overridden via
       `payoff_fn` without changing the return format.
+    - When `strict=True`, the executor raises instead of warning on
+      protocol violations (4-tuple step, missing task_payoff).
     """
 
     def __init__(
@@ -26,6 +68,7 @@ class SkillExecutor:
         gamma: float = 0.99,
         max_steps: Optional[int] = None,
         payoff_fn: Optional[Callable[[np.ndarray], float]] = None,
+        strict: bool = False,
     ) -> None:
         """
         Initialize executor configuration.
@@ -35,6 +78,8 @@ class SkillExecutor:
             gamma: Discount factor used for payoff and motive totals.
             max_steps: Optional rollout cap. If None, run until env ends.
             payoff_fn: Optional scalarization function for reward vectors.
+            strict: When True, raise on protocol violations instead of
+                    warning and falling back. Use for certified rollouts.
         """
         if not (0.0 <= gamma <= 1.0):
             raise ValueError("gamma must be in [0, 1]")
@@ -44,6 +89,7 @@ class SkillExecutor:
         self.gamma = gamma
         self.max_steps = max_steps
         self.payoff_fn = payoff_fn or (lambda reward_vec: float(np.sum(reward_vec)))
+        self.strict = strict
         self.last_run_info = None         # Holds diagnostics from the most recent run for downstream debugging.
 
     @classmethod
@@ -132,6 +178,12 @@ class SkillExecutor:
             if len(step_out) == 5:
                 obs, reward_vec, terminated, truncated, info = step_out
             elif len(step_out) == 4:
+                if self.strict:
+                    raise ValueError(
+                        "strict=True: environment step() returned a 4-tuple; "
+                        "SubRepBaseEnv requires a 5-tuple "
+                        "(obs, motives, terminated, truncated, info)."
+                    )
                 obs, reward_vec, terminated, info = step_out
                 truncated = False
             else:
@@ -147,6 +199,11 @@ class SkillExecutor:
             if "task_payoff" in info:
                 step_payoff = float(info["task_payoff"])
             else:
+                if self.strict:
+                    raise ValueError(
+                        "strict=True: environment step() info dict is missing 'task_payoff'; "
+                        "all SubRepBaseEnv-conforming environments must set info['task_payoff']."
+                    )
                 warnings.warn(
                     "Environment step info missing 'task_payoff'; falling back to payoff_fn",
                     RuntimeWarning,
@@ -199,7 +256,15 @@ class SkillExecutor:
             "motive_names": motive_names,
         }
 
-        return float(total_payoff), motive_deltas, bool(terminated)
+        return ExecutionResult(
+            total_payoff=float(total_payoff),
+            motive_deltas=motive_deltas,
+            terminated=bool(terminated),
+            steps=steps,
+            stop_reason=stop_reason,
+            motive_names=list(motive_names) if motive_names is not None else None,
+            behavior_probability=behavior_probability,
+        )
 
     @staticmethod
     def _parse_policy_output(action_output):
