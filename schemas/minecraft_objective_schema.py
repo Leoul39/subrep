@@ -53,3 +53,10 @@ LUNARLANDER_OBJECTIVE_SCHEMA = ObjectiveSchema(
     motive_schema_version="1.0",
     motive_names=("Safety", "Fuel"),
 )
+
+# Safety-Gymnasium 2D schema: [Safety, Task].
+SAFETY_GYMNASIUM_OBJECTIVE_SCHEMA = ObjectiveSchema(
+    domain_id="safety_gymnasium",
+    motive_schema_version="1.0",
+    motive_names=("Safety", "Task"),
+)
