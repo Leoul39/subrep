@@ -575,9 +575,37 @@ class TestLegacyArtifactBackwardCompatibility:
         assert cert.motive_schema_version is None
         assert cert.motive_names is None
 
-    def test_legacy_2d_cert_is_accepted_by_schema_compatible_check(self):
-        """None schema (legacy) is always compatible."""
-        cert = Certificate.from_dict({
+    def test_legacy_2d_cert_is_rejected_by_strict_schemas_compatible(self):
+        """schemas_compatible is strict: None schema is quarantined at runtime."""
+        from schemas.objective_schema import schemas_compatible, schemas_loadable
+        # Strict runtime check: None → False (quarantined)
+        assert schemas_compatible(None, LUNARLANDER_OBJECTIVE_SCHEMA) is False
+        assert schemas_compatible(None, MINECRAFT_OBJECTIVE_SCHEMA) is False
+        # Loading check: None → True (accepted for deserialization)
+        assert schemas_loadable(None, LUNARLANDER_OBJECTIVE_SCHEMA) is True
+        assert schemas_loadable(None, MINECRAFT_OBJECTIVE_SCHEMA) is True
+
+    def test_legacy_cert_in_library_is_quarantined_from_schema_queries(self):
+        """Legacy cert (no schema) must be EXCLUDED from query_by_schema (strict mode)."""
+        from library.skill_library import SkillLibrary
+
+        lib = SkillLibrary()
+        cert = _make_cert(skill_id="legacy_no_schema", delta_n=(0.3, 0.2))
+        # No domain_id / schema fields set → legacy
+        lib.add_skill("legacy_no_schema", cert, policy=lambda obs: 0)
+
+        mc_result = lib.query_by_schema(MINECRAFT_OBJECTIVE_SCHEMA)
+        ll_result = lib.query_by_schema(LUNARLANDER_OBJECTIVE_SCHEMA)
+
+        # Legacy cert is quarantined — must NOT appear in strict schema queries.
+        mc_ids = {s.skill_id for s in mc_result}
+        ll_ids = {s.skill_id for s in ll_result}
+        assert "legacy_no_schema" not in mc_ids
+        assert "legacy_no_schema" not in ll_ids
+
+    def test_legacy_cert_loads_successfully_from_dict(self):
+        """Legacy certs without schema fields must still deserialize cleanly."""
+        legacy_dict = {
             "skill_id": "leg2",
             "gate_type": "CDS",
             "delta_r": 0.2,
@@ -591,29 +619,12 @@ class TestLegacyArtifactBackwardCompatibility:
             "environment": "MO-LunarLander-v2",
             "episode_length": 100,
             "version": "0.1.0",
-        })
-        # Legacy cert has no schema fields → should appear in any query_by_schema.
-        assert schemas_compatible(None, LUNARLANDER_OBJECTIVE_SCHEMA)
-        assert schemas_compatible(None, MINECRAFT_OBJECTIVE_SCHEMA)
-
-    def test_legacy_cert_in_library_appears_in_all_schema_queries(self):
-        """Legacy cert (no schema) must be included in any query_by_schema."""
-        from library.skill_library import SkillLibrary
-        # Import directly from module, not via __init__ which pulls torch.
-
-        lib = SkillLibrary()
-        cert = _make_cert(skill_id="legacy_no_schema", delta_n=(0.3, 0.2))
-        # No domain_id / schema fields set
-        lib.add_skill("legacy_no_schema", cert, policy=lambda obs: 0)
-
-        mc_result = lib.query_by_schema(MINECRAFT_OBJECTIVE_SCHEMA)
-        ll_result = lib.query_by_schema(LUNARLANDER_OBJECTIVE_SCHEMA)
-
-        # Legacy cert appears in both — schema unknown → accepted.
-        mc_ids = {s.skill_id for s in mc_result}
-        ll_ids = {s.skill_id for s in ll_result}
-        assert "legacy_no_schema" in mc_ids
-        assert "legacy_no_schema" in ll_ids
+        }
+        cert = Certificate.from_dict(legacy_dict)
+        assert cert.domain_id is None
+        assert cert.motive_schema_version is None
+        assert cert.motive_names is None
+        assert len(cert.delta_n) == 2
 
 
 # ===========================================================================
@@ -759,3 +770,218 @@ class TestRemovedTwoDimensionalAssumptions:
 
         results = store.query_by_weights([1.0 / 6] * 6)
         assert isinstance(results, list)
+
+
+# ===========================================================================
+# 15. Group A: strict schema_compatible / schemas_loadable split
+# ===========================================================================
+
+class TestSchemasCompatibleStrictSplit:
+    """Verify the strict/permissive function split introduced in Group A."""
+
+    def test_strict_compatible_two_identical_schemas(self):
+        a = ObjectiveSchema("dom", "1.0", ("A", "B"))
+        b = ObjectiveSchema("dom", "1.0", ("A", "B"))
+        assert schemas_compatible(a, b) is True
+
+    def test_strict_compatible_none_a_returns_false(self):
+        from schemas.objective_schema import schemas_compatible
+        assert schemas_compatible(None, MINECRAFT_OBJECTIVE_SCHEMA) is False
+
+    def test_strict_compatible_none_b_returns_false(self):
+        from schemas.objective_schema import schemas_compatible
+        assert schemas_compatible(LUNARLANDER_OBJECTIVE_SCHEMA, None) is False
+
+    def test_strict_compatible_both_none_returns_false(self):
+        from schemas.objective_schema import schemas_compatible
+        assert schemas_compatible(None, None) is False
+
+    def test_loadable_none_a_returns_true(self):
+        from schemas.objective_schema import schemas_loadable
+        assert schemas_loadable(None, MINECRAFT_OBJECTIVE_SCHEMA) is True
+
+    def test_loadable_none_b_returns_true(self):
+        from schemas.objective_schema import schemas_loadable
+        assert schemas_loadable(LUNARLANDER_OBJECTIVE_SCHEMA, None) is True
+
+    def test_loadable_both_none_returns_true(self):
+        from schemas.objective_schema import schemas_loadable
+        assert schemas_loadable(None, None) is True
+
+    def test_loadable_two_identical_schemas(self):
+        from schemas.objective_schema import schemas_loadable
+        a = ObjectiveSchema("dom", "1.0", ("A", "B"))
+        assert schemas_loadable(a, a) is True
+
+    def test_loadable_two_different_schemas(self):
+        from schemas.objective_schema import schemas_loadable
+        assert schemas_loadable(LUNARLANDER_OBJECTIVE_SCHEMA, MINECRAFT_OBJECTIVE_SCHEMA) is False
+
+
+# ===========================================================================
+# 16. Group A: all-or-none schema identity in Certificate
+# ===========================================================================
+
+class TestCertificateAllOrNoneSchemaIdentity:
+
+    def _base_dict(self, **overrides):
+        d = {
+            "skill_id": "s1",
+            "gate_type": "CDS",
+            "delta_r": 0.5,
+            "delta_n": [0.1, 0.2],
+            "admission_margin": 0.6,
+            "epsilon": 0.0,
+            "timestamp": datetime.now().isoformat(),
+            "seed": 1,
+            "gamma": 0.99,
+            "baseline_id": "b",
+            "environment": "E",
+            "episode_length": 10,
+            "version": "1",
+        }
+        d.update(overrides)
+        return d
+
+    def test_all_three_none_accepted(self):
+        cert = Certificate.from_dict(self._base_dict())
+        assert cert.domain_id is None
+        assert cert.motive_schema_version is None
+        assert cert.motive_names is None
+
+    def test_all_three_present_accepted(self):
+        cert = Certificate.from_dict(self._base_dict(
+            domain_id="lunarlander",
+            motive_schema_version="1.0",
+            motive_names=["Safety", "Fuel"],
+        ))
+        assert cert.domain_id == "lunarlander"
+        assert cert.motive_names == ("Safety", "Fuel")
+
+    def test_domain_id_only_raises(self):
+        with pytest.raises(ValueError, match="all-or-none"):
+            Certificate.from_dict(self._base_dict(domain_id="lunarlander"))
+
+    def test_domain_id_and_version_only_raises(self):
+        with pytest.raises(ValueError, match="all-or-none"):
+            Certificate.from_dict(self._base_dict(
+                domain_id="lunarlander",
+                motive_schema_version="1.0",
+            ))
+
+    def test_names_only_raises(self):
+        with pytest.raises(ValueError, match="all-or-none"):
+            Certificate.from_dict(self._base_dict(
+                domain_id=None,
+                motive_names=["Safety", "Fuel"],
+            ))
+
+
+# ===========================================================================
+# 17. Group A: score_candidate N-dimensional weight check
+# ===========================================================================
+
+class TestScoreCandidateNDimensional:
+
+    def _make_rec(self, delta_n, **kw):
+        return _make_candidate_record(delta_n=delta_n, **kw)
+
+    def test_2d_candidate_2d_weights_passes(self):
+        pytest.importorskip("torch")
+        from utils.mdn_selection import score_candidate
+        rec = self._make_rec(delta_n=(0.3, 0.2))
+        score = score_candidate(rec, np.array([0.6, 0.4]))
+        assert isinstance(score, float)
+
+    def test_6d_candidate_6d_weights_passes(self):
+        pytest.importorskip("torch")
+        from utils.mdn_selection import score_candidate
+        rec = self._make_rec(delta_n=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6))
+        score = score_candidate(rec, np.full(6, 1.0 / 6))
+        assert isinstance(score, float)
+
+    def test_6d_candidate_2d_weights_raises(self):
+        pytest.importorskip("torch")
+        from utils.mdn_selection import score_candidate
+        rec = self._make_rec(delta_n=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6))
+        with pytest.raises(ValueError, match="weights length"):
+            score_candidate(rec, np.array([0.5, 0.5]))
+
+    def test_2d_candidate_6d_weights_raises(self):
+        pytest.importorskip("torch")
+        from utils.mdn_selection import score_candidate
+        rec = self._make_rec(delta_n=(0.3, 0.2))
+        with pytest.raises(ValueError, match="weights length"):
+            score_candidate(rec, np.full(6, 1.0 / 6))
+
+
+# ===========================================================================
+# 18. Group A: query_admissible strict schema filter
+# ===========================================================================
+
+class TestQueryAdmissibleSchemaFilter:
+    """Verify that query_admissible enforces schema when schema arg is given."""
+
+    def _make_lib_with_lunar_and_mc(self):
+        """Library with one 2D Lunar skill and one 6D Minecraft skill."""
+        from library.skill_library import SkillLibrary
+        lib = SkillLibrary()
+
+        lunar_cert = _make_cert(
+            skill_id="lunar_skill",
+            delta_n=(0.3, 0.2),
+            domain_id="lunarlander",
+            motive_schema_version="1.0",
+            motive_names=("Safety", "Fuel"),
+        )
+        mc_cert = _make_cert(
+            skill_id="mc_skill",
+            delta_n=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6),
+            domain_id="minecraft_village_defense_trade",
+            motive_schema_version="1.0",
+            motive_names=MINECRAFT_MOTIVE_NAMES,
+        )
+        legacy_cert = _make_cert(skill_id="legacy_skill", delta_n=(0.3, 0.2))
+
+        lib.add_skill("lunar_skill", lunar_cert, policy=lambda obs: 0)
+        lib.add_skill("mc_skill", mc_cert, policy=lambda obs: "idle")
+        lib.add_skill("legacy_skill", legacy_cert, policy=lambda obs: 0)
+        return lib
+
+    def test_no_schema_returns_all(self):
+        lib = self._make_lib_with_lunar_and_mc()
+        # 2D weight — lunar and legacy have 2D delta_n, mc has 6D so will be skipped
+        # by dimension guard. With schema=None, no schema filtering.
+        result_ids = {e.skill_id for e in lib.query_admissible(
+            np.array([0.5, 0.5]), schema=None
+        )}
+        assert "lunar_skill" in result_ids
+        assert "legacy_skill" in result_ids
+        # mc_skill skipped: dim mismatch (6D delta_n vs 2D weight)
+        assert "mc_skill" not in result_ids
+
+    def test_mc_schema_returns_only_mc_skill(self):
+        lib = self._make_lib_with_lunar_and_mc()
+        result_ids = {e.skill_id for e in lib.query_admissible(
+            np.full(6, 1.0 / 6), schema=MINECRAFT_OBJECTIVE_SCHEMA
+        )}
+        assert "mc_skill" in result_ids
+        assert "lunar_skill" not in result_ids
+        assert "legacy_skill" not in result_ids  # quarantined
+
+    def test_lunar_schema_returns_only_lunar_skill(self):
+        lib = self._make_lib_with_lunar_and_mc()
+        result_ids = {e.skill_id for e in lib.query_admissible(
+            np.array([0.5, 0.5]), schema=LUNARLANDER_OBJECTIVE_SCHEMA
+        )}
+        assert "lunar_skill" in result_ids
+        assert "mc_skill" not in result_ids
+        assert "legacy_skill" not in result_ids  # quarantined
+
+    def test_legacy_only_library_with_schema_returns_empty(self):
+        from library.skill_library import SkillLibrary
+        lib = SkillLibrary()
+        cert = _make_cert(skill_id="leg", delta_n=(0.3, 0.2))
+        lib.add_skill("leg", cert, policy=lambda obs: 0)
+        result = lib.query_admissible(np.array([0.5, 0.5]), schema=LUNARLANDER_OBJECTIVE_SCHEMA)
+        assert result == []
