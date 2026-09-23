@@ -75,6 +75,25 @@ class CandidateSkillRecord:
         if not isinstance(self.metadata, dict):
             raise ValueError(f"metadata must be a dict, got {type(self.metadata).__name__}")
 
+        # All-or-none schema identity: must have all three or none.
+        schema_fields = (self.domain_id, self.motive_schema_version, self.motive_names)
+        present = sum(f is not None for f in schema_fields)
+        if present not in (0, 3):
+            raise ValueError(
+                "Schema identity must be all-or-none: provide all of "
+                "domain_id, motive_schema_version, and motive_names, or none of them."
+            )
+
+        # When motive_names is provided, length must match delta_n.
+        if self.motive_names is not None:
+            names = tuple(self.motive_names)
+            object.__setattr__(self, "motive_names", names)
+            if len(names) != len(delta_n):
+                raise ValueError(
+                    f"motive_names length ({len(names)}) must match "
+                    f"delta_n length ({len(delta_n)}) when provided"
+                )
+
 
 @dataclass(frozen=True)
 class MDNDecisionRecord:
@@ -129,6 +148,15 @@ class MDNDecisionRecord:
             raise ValueError("candidate_skills must not be empty")
         if not all(isinstance(candidate, CandidateSkillRecord) for candidate in self.candidate_skills):
             raise ValueError("candidate_skills must contain only CandidateSkillRecord instances")
+
+        # Every candidate's delta_n dimension must equal len(alpha).
+        n = len(alpha)
+        for candidate in self.candidate_skills:
+            if len(candidate.delta_n) != n:
+                raise ValueError(
+                    f"Candidate '{candidate.skill_id}' has delta_n of length {len(candidate.delta_n)}, "
+                    f"but alpha has length {n}. All candidates must share the same motive dimension."
+                )
 
         if not isinstance(self.selected_skill_id, str) or not self.selected_skill_id.strip():
             raise ValueError("selected_skill_id must be a non-empty string")

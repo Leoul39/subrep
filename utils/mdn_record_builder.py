@@ -27,6 +27,10 @@ class PreparedCandidateOutcome:
     metadata: dict[str, Any] = field(default_factory=dict)
     gate_type: str = "CDS"
     epsilon: float | None = None
+    # Optional schema identity — propagated into the CandidateSkillRecord.
+    domain_id: str | None = None
+    motive_schema_version: str | None = None
+    motive_names: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         context = np.asarray(self.context, dtype=np.float32).reshape(-1)
@@ -77,6 +81,9 @@ def build_candidate_skill_record(
     baseline_id: str | None = None,
     epsilon: float | None = None,
     weight_set: WeightSet | None = None,
+    domain_id: str | None = None,
+    motive_schema_version: str | None = None,
+    motive_names: tuple[str, ...] | None = None,
 ) -> CandidateSkillRecord:
     """Build a certified-candidate record from baseline-relative improvements."""
     calculator = ImprovementCalculator(baseline_stats)
@@ -105,6 +112,9 @@ def build_candidate_skill_record(
         admission_margin=admission_margin,
         epsilon=effective_epsilon,
         baseline_id=baseline_id,
+        domain_id=domain_id,
+        motive_schema_version=motive_schema_version,
+        motive_names=motive_names,
     )
 
 
@@ -136,6 +146,9 @@ def build_candidate_skill_records(
                 baseline_id=baseline_id,
                 epsilon=prepared.epsilon,
                 weight_set=weight_set,
+                domain_id=prepared.domain_id,
+                motive_schema_version=prepared.motive_schema_version,
+                motive_names=prepared.motive_names,
             )
         )
     return tuple(records)
