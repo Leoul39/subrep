@@ -123,6 +123,9 @@ def python_to_metta_value(value: Any) -> Any:
     """Convert supported Python values into MeTTA atoms."""
     if value is None:
         return S("Nil")
+    if _is_string_vector(value):
+        # Encode a list/tuple of strings as (strvec "name1" "name2" ...).
+        return E(S("strvec"), *[ValueAtom(str(item)) for item in value])
     if _is_numeric_vector(value):
         return E(S("vec"), *[ValueAtom(float(item)) for item in value])
     if _is_list_of_numeric_vectors(value):
@@ -158,6 +161,9 @@ def metta_to_python_value(metta_value: Any) -> Any:
         head = children[0].get_name()
         if head == "vec":
             return [float(metta_to_python_value(child)) for child in children[1:]]
+        if head == "strvec":
+            # Decode a string-vector: children are ValueAtoms holding strings.
+            return [str(_atom_value(child)) for child in children[1:]]
         if head == "list":
             return [metta_to_python_value(child) for child in children[1:]]
         raise ValueError(f"Unsupported expression value: {metta_value}")
@@ -178,14 +184,35 @@ def _atom_value(atom: Any) -> Any:
 def _is_numeric_vector(value: Any) -> bool:
     if isinstance(value, (str, bytes)):
         return False
-    if not isinstance(value, (list, tuple)):
+    try:
+        items = list(value)
+    except TypeError:
         return False
-    if not value:
-        return True
-    return all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in value)
+    if not items:
+        return False
+    return all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in items)
+
+
+def _is_string_vector(value: Any) -> bool:
+    """Return True when value is a non-empty list/tuple of plain strings."""
+    if isinstance(value, (str, bytes)):
+        return False
+    try:
+        items = list(value)
+    except TypeError:
+        return False
+    if not items:
+        return False
+    return all(isinstance(item, str) for item in items)
 
 
 def _is_list_of_numeric_vectors(value: Any) -> bool:
-    if not isinstance(value, (list, tuple)) or not value:
+    if isinstance(value, (str, bytes)):
         return False
-    return all(_is_numeric_vector(item) for item in value)
+    try:
+        rows = list(value)
+    except TypeError:
+        return False
+    if not rows:
+        return False
+    return all(_is_numeric_vector(row) for row in rows)
