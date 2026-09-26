@@ -1,133 +1,91 @@
-"""
-Safety-Gymnasium Environment Wrapper for SubRep.
+"""Safety-Gymnasium adapter for SubRep SafeRL pilots.
 
-This wrapper adapts a Safety-Gymnasium environment to the SubRepBaseEnv contract,
-exposing a 2D motive vector [Safety, Task] and injecting ``task_payoff`` into
-each step's info dict.
+The wrapper maps a Safety-Gymnasium environment into the same 2-objective
+contract used by the rest of SubRep:
 
-The real ``safety_gymnasium`` package requires Python 3.10 and is an optional
-dependency.  Tests that need to run without the real package should inject a
-fake environment via the ``env`` constructor parameter instead of relying on
-``safety_gymnasium.make``.
+    reward -> task payoff objective
+    cost   -> safety objective, with larger values meaning safer behavior
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Callable, Optional
 
 import numpy as np
-
-_SAFETY_GYM_AVAILABLE = False
-try:
-    import safety_gymnasium  # type: ignore[import]
-    _SAFETY_GYM_AVAILABLE = True
-except ImportError:
-    pass
+from gymnasium.spaces import Box
 
 
-class SafetyGymnasiumEnv:
-    """
-    Wraps a Safety-Gymnasium environment to conform to SubRepBaseEnv.
-
-    Motive vector: [Safety, Task]
-      - Safety  = 1.0 - cost (clipped to [0, 1])
-      - Task    = task reward from the underlying environment
-
-    Args:
-        env_id: Safety-Gymnasium environment ID (e.g. ``"SafetyPointGoal1-v0"``).
-                Ignored when ``env`` is provided directly.
-        env:    Pre-constructed environment instance.  When provided, ``env_id``
-                is not used and ``safety_gymnasium`` need not be installed.
-        seed:   Optional seed passed to the first ``reset()`` call.
-    """
+class SafeRLGymnasiumEnv:
+    """Wrap a Safety-Gymnasium env with SubRep's 2D reward interface."""
 
     def __init__(
         self,
         env_id: str = "SafetyPointGoal1-v0",
-        env: Any = None,
-        seed: Optional[int] = None,
+        seed: int = 42,
+        render_mode: Optional[str] = None,
+        make_env: Optional[Callable] = None,
     ) -> None:
-        if env is not None:
-            self._env = env
-        elif _SAFETY_GYM_AVAILABLE:
-            self._env = safety_gymnasium.make(env_id)
-        else:
+        self.env_id = env_id
+        self.seed = int(seed)
+        self.env = self._create_env(env_id, render_mode=render_mode, make_env=make_env)
+        self.env.reset(seed=self.seed)
+
+        self.observation_space = self.env.observation_space
+        self.action_space = self.env.action_space
+        self.reward_space = Box(
+            low=np.array([-np.inf, -np.inf], dtype=np.float32),
+            high=np.array([np.inf, np.inf], dtype=np.float32),
+            shape=(2,),
+            dtype=np.float32,
+        )
+
+    @staticmethod
+    def _create_env(env_id: str, *, render_mode: Optional[str], make_env: Optional[Callable]):
+        if make_env is not None:
+            try:
+                return make_env(env_id, render_mode=render_mode)
+            except TypeError:
+                return make_env(env_id)
+
+        try:
+            import safety_gymnasium
+        except ImportError as exc:
             raise ImportError(
-                "safety_gymnasium is not installed and no env was injected. "
-                "Install safety-gymnasium (requires Python 3.10) or pass a "
-                "fake env object via the 'env' parameter."
-            )
-        self._seed = seed
+                "Safety-Gymnasium is optional. Install it in a Python 3.10 "
+                "environment with: python -m pip install -r requirements-safety.txt"
+            ) from exc
+
+        if render_mode is None:
+            return safety_gymnasium.make(env_id)
+        return safety_gymnasium.make(env_id, render_mode=render_mode)
+
+    def reset(self, seed=None):
         if seed is not None:
-            self._env.reset(seed=seed)
+            self.seed = int(seed)
+            return self.env.reset(seed=self.seed)
+        return self.env.reset()
 
-    # ------------------------------------------------------------------
-    # SubRepBaseEnv interface
-    # ------------------------------------------------------------------
+    def step(self, action):
+        obs, reward, cost, terminated, truncated, info = self.env.step(action)
+        info = dict(info)
+        reward_value = float(reward)
+        cost_value = float(np.asarray(cost, dtype=np.float64).reshape(-1)[0])
+        reward_vector = self._map_reward_and_cost(reward_value, cost_value)
 
-    @property
-    def metadata(self) -> Dict[str, Any]:
-        """Environment metadata dictionary conforming to SubRep specification."""
-        return {
-            "environment_id": "subrep_safety_gymnasium_v1",
-            "motive_names": ["Safety", "Task"],
-            "motive_schema_version": "1.0",
-            "payoff_schema_version": "1.0",
-            "observation_schema_version": "1.0",
-            "action_schema_version": "1.0",
-        }
+        info["task_reward"] = reward_value
+        info["safety_cost"] = cost_value
+        info["safety_motive"] = float(reward_vector[0])
+        info["task_motive"] = float(reward_vector[1])
+        info["subrep_reward"] = reward_vector.copy()
 
-    def reset(
-        self,
-        seed: Optional[int] = None,
-        options: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[Any, Dict[str, Any]]:
-        """Reset the environment and return (observation, info)."""
-        if seed is not None:
-            self._seed = seed
-            obs, info = self._env.reset(seed=seed)
-        else:
-            reset_out = self._env.reset()
-            if isinstance(reset_out, tuple) and len(reset_out) == 2:
-                obs, info = reset_out
-            else:
-                obs, info = reset_out, {}
-        return obs, dict(info) if isinstance(info, dict) else {}
+        return obs, reward_vector, terminated, truncated, info
 
-    def step(self, action: Any) -> Tuple[Any, np.ndarray, bool, bool, Dict[str, Any]]:
-        """
-        Step the environment and return the SubRepBaseEnv 5-tuple.
-
-        Returns:
-            (observation, motive_vector, terminated, truncated, info)
-            motive_vector shape: (2,) — [Safety, Task]
-            info["task_payoff"]: scalar task reward.
-        """
-        step_out = self._env.step(action)
-        if len(step_out) == 5:
-            obs, reward, cost, terminated, info = step_out
-            truncated = False
-        elif len(step_out) == 6:
-            obs, reward, cost, terminated, truncated, info = step_out
-        else:
-            raise ValueError(
-                f"Expected Safety-Gymnasium step() to return 5 or 6 elements, got {len(step_out)}"
-            )
-
-        info = dict(info) if isinstance(info, dict) else {}
-
-        # Build the 2D motive vector: [Safety, Task]
-        # Safety = 1 - cost, clipped to [0, 1] so larger is always better.
-        safety = float(np.clip(1.0 - float(cost), 0.0, 1.0))
+    @staticmethod
+    def _map_reward_and_cost(reward: float, cost: float) -> np.ndarray:
+        """Return motives ordered as [Safety, Task]. Larger is better."""
+        safety = -float(cost)
         task = float(reward)
-        motive_vector = np.array([safety, task], dtype=np.float32)
-
-        # Inject scalar task_payoff for SubRepBaseEnv compliance.
-        info["task_payoff"] = task
-        info["cost"] = float(cost)
-
-        return obs, motive_vector, bool(terminated), bool(truncated), info
+        return np.array([safety, task], dtype=np.float32)
 
     def close(self) -> None:
-        """Close and clean up environment resources."""
-        self._env.close()
+        self.env.close()
