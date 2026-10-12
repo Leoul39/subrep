@@ -55,6 +55,51 @@ def load_candidate_set_files(eval_dir: str, pattern: str = "*.npz") -> list[dict
     return records
 
 
+def load_training_context_seeds(training_data_dir: str) -> set[int]:
+    """Load all training seeds, refusing datasets whose seeds cannot be verified."""
+    paths = sorted(glob.glob(os.path.join(training_data_dir, "*.npz")))
+    if not paths:
+        raise FileNotFoundError(f"No training .npz files found in {training_data_dir}.")
+
+    seeds = set()
+    missing_seed_files = []
+    for path in paths:
+        with np.load(path, allow_pickle=True) as saved_record:
+            if "context_seed" not in saved_record.files:
+                missing_seed_files.append(os.path.basename(path))
+            else:
+                seeds.add(int(saved_record["context_seed"]))
+
+    if missing_seed_files:
+        examples = ", ".join(missing_seed_files[:5])
+        remainder = len(missing_seed_files) - 5
+        if remainder > 0:
+            examples += f", and {remainder} more"
+        raise ValueError(
+            "Cannot verify evaluation seeds because "
+            f"{len(missing_seed_files)} training .npz file(s) lack context_seed ({examples}). "
+            "Collect a fresh training dataset with context_seed metadata before evaluation."
+        )
+    return seeds
+
+
+def validate_eval_seeds_disjoint(records: list[dict], training_data_dir: str) -> None:
+    """Raise when supplementary evaluation seeds occur in the training dataset."""
+    training_seeds = load_training_context_seeds(training_data_dir)
+    evaluation_seeds = {int(record["context_seed"]) for record in records}
+    overlapping_seeds = training_seeds & evaluation_seeds
+    if overlapping_seeds:
+        examples = ", ".join(str(seed) for seed in sorted(overlapping_seeds)[:10])
+        remainder = len(overlapping_seeds) - 10
+        if remainder > 0:
+            examples += f", and {remainder} more"
+        raise ValueError(
+            "Supplementary evaluation seeds overlap the training dataset "
+            f"({len(overlapping_seeds)} seeds: {examples}). Collect evaluation data "
+            "with seeds not present in the training dataset, then rerun the report."
+        )
+
+
 def _format_seed_range(seeds: set[int]) -> str:
     """Compact 'min-max' display, not a full listing of every value."""
     if not seeds:
@@ -203,7 +248,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Certification-focused evaluation report for SkillGenerator.")
     parser.add_argument("--model-path", type=str, default="models/generator.pt")
     parser.add_argument("--eval-dir", type=str, default="data/mdn_candidate_sets_eval",
-                         help="Candidate-set directory collected from seeds NOT used in generator training.")
+                         help="Held-out candidate-set directory collected from seeds NOT used in generator training.")
+    parser.add_argument("--training-data-dir", type=str, default="data/raw",
+                        help="Training rollout directory used to verify evaluation seed separation.")
     parser.add_argument("--baseline-episodes", type=int, default=20)
     parser.add_argument("--baseline-seed", type=int, default=42)
     parser.add_argument("--output", type=str, default="demo/artifacts/generator_evaluation_report.json")
@@ -219,7 +266,8 @@ def main() -> None:
 
     try:
         records = load_candidate_set_files(args.eval_dir)
-    except FileNotFoundError as e:
+        validate_eval_seeds_disjoint(records, args.training_data_dir)
+    except (FileNotFoundError, ValueError) as e:
         print(f"Error: {e}")
         return
 

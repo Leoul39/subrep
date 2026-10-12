@@ -17,16 +17,24 @@ multiple policies and is out of scope for this model -- see
 python -m data_collector.collect --episodes 2000 --save-dir data/raw --seed 42
 ```
 
+This produces training context seeds 42-2041. The report later checks evaluation
+seeds against the training `.npz` files before producing results.
+
 ## 2. Collect held-out evaluation data (non-overlapping seeds)
 
 The collector uses `context_seed = --seed + context_index` with indices 1-1000.
-These runs therefore produce context-seed ranges 1001-2000, 2001-3000, and
-3001-4000, without overlap:
+Use these ranges after training seeds 42-2041; the report also checks the
+evaluation seeds against every training `.npz` file before producing results:
 ```bash
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 1000 --prefix seed1000
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 2000 --prefix seed2000
 python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 3000 --prefix seed3000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 4000 --prefix seed4000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 5000 --prefix seed5000
 ```
+
+These runs produce disjoint context-seed ranges 3001-4000, 4001-5000, and
+5001-6000. Keep only the intended held-out files in this eval directory. For
+training data in a different location, pass `--training-data-dir` to the report
+command.
 
 ## 3. Train
 
@@ -57,7 +65,7 @@ demonstrably learned a useful, state-dependent pattern.
 ## 5. Certification-focused report on held-out seeds
 
 ```bash
-python -m generator.evaluate_generator_report --model-path models/generator.pt --eval-dir data/mdn_candidate_sets_eval
+python -m generator.evaluate_generator_report --model-path models/generator.pt --eval-dir data/mdn_candidate_sets_eval_heldout
 ```
 
 The evaluator reads every `.npz` file in `--eval-dir`; the three runs above are
@@ -108,9 +116,9 @@ written to `demo/artifacts/`; plots are written to
 
 ```bash
 python -m data_collector.collect --episodes 2000 --save-dir data/raw --seed 42
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 1000 --prefix seed1000
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 2000 --prefix seed2000
 python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 3000 --prefix seed3000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 4000 --prefix seed4000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 5000 --prefix seed5000
 python -m generator.train_generator --data-dir data/raw --output models/generator.pt
 python -m generator.evaluate_generator_mse --model-path models/generator.pt --data-dir data/raw
 python -m generator.evaluate_generator_report --model-path models/generator.pt --eval-dir data/mdn_candidate_sets_eval

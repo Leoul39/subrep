@@ -144,6 +144,36 @@ def test_context_seeds_continue_across_run_seeds_and_prefixes(temp_data_dir):
 
     assert saved_seeds == [500, 501, 502, 503, 600, 601]
 
+
+def test_append_stops_when_existing_files_lack_context_seed(temp_data_dir):
+    os.makedirs(temp_data_dir, exist_ok=True)
+    legacy_path = os.path.join(temp_data_dir, "legacy_ep001.npz")
+    np.savez(legacy_path, obs=np.zeros(8), payoff=0.0, motives=np.zeros(2))
+
+    env = SubRepEnv(seed=42)
+    executor = SkillExecutor(env=env, policy_fn=lambda obs: 0, gamma=0.99, max_steps=10)
+    collector = DataCollector(executor=executor, seed=42, save_dir=temp_data_dir)
+
+    with pytest.raises(ValueError, match="lack context_seed.*Collect a fresh dataset"):
+        collector.collect_n_episodes(1, print_summary=False)
+
+    assert os.listdir(temp_data_dir) == ["legacy_ep001.npz"]
+
+def test_append_stops_when_existing_files_lack_context_seed(temp_data_dir):
+    os.makedirs(temp_data_dir, exist_ok=True)
+    legacy_path = os.path.join(temp_data_dir, "legacy_ep001.npz")
+    np.savez(legacy_path, obs=np.zeros(8), payoff=0.0, motives=np.zeros(2))
+
+    env = SubRepEnv(seed=42)
+    executor = SkillExecutor(env=env, policy_fn=lambda obs: 0, gamma=0.99, max_steps=10)
+    collector = DataCollector(executor=executor, seed=42, save_dir=temp_data_dir)
+
+    with pytest.raises(ValueError, match="lack context_seed.*Collect a fresh dataset"):
+        collector.collect_n_episodes(1, print_summary=False)
+
+    assert os.listdir(temp_data_dir) == ["legacy_ep001.npz"]
+
+
 def test_custom_prefix_prevents_overwriting(temp_data_dir):
     """
     Run 1 episode with prefix 'A'.

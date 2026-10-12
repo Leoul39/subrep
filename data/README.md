@@ -68,10 +68,13 @@ Collect held-out candidate sets:
 
 ```
 ```bash
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 1000 --prefix seed1000
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 2000 --prefix seed2000
 python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 3000 --prefix seed3000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 4000 --prefix seed4000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 5000 --prefix seed5000
 ```
+
+These produce context seeds 3001-6000, separated from SkillGenerator training
+seeds 42-2041. Use a fresh directory when replacing an older evaluation set.
 
 
 Per-file schema:

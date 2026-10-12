@@ -7,7 +7,11 @@ import torch
 
 from generator import compare_dataset_sizes
 from generator.evaluate_generator_mse import evaluate_dataset
-from generator.evaluate_generator_report import build_report, load_candidate_set_files
+from generator.evaluate_generator_report import (
+    build_report,
+    load_candidate_set_files,
+    validate_eval_seeds_disjoint,
+)
 
 
 class ZeroPredictionModel(torch.nn.Module):
@@ -291,6 +295,26 @@ def test_report_loader_reads_candidate_set_records(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="No candidate-set"):
         load_candidate_set_files(str(tmp_path / "missing"))
+
+
+def test_supplementary_evaluation_seeds_must_be_absent_from_training_data(tmp_path):
+    training_dir = tmp_path / "training"
+    training_dir.mkdir()
+    np.savez(training_dir / "train.npz", context_seed=np.int64(42))
+    evaluation_records = [{"context_seed": 3001}, {"context_seed": 3002}]
+
+    validate_eval_seeds_disjoint(evaluation_records, str(training_dir))
+    with pytest.raises(ValueError, match="overlap the training dataset.*42"):
+        validate_eval_seeds_disjoint([{"context_seed": 42}], str(training_dir))
+
+
+def test_supplementary_evaluation_seed_check_rejects_legacy_training_data(tmp_path):
+    training_dir = tmp_path / "training"
+    training_dir.mkdir()
+    np.savez(training_dir / "legacy.npz", obs=np.zeros(8))
+
+    with pytest.raises(ValueError, match="lack context_seed.*fresh training dataset"):
+        validate_eval_seeds_disjoint([{"context_seed": 3001}], str(training_dir))
 
 
 def test_report_aggregates_certification_and_prediction_metrics():

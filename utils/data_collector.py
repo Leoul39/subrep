@@ -93,13 +93,27 @@ class DataCollector:
 
     def _next_context_seed(self) -> int:
         next_seed = int(self.seed)
+        missing_seed_files = []
         for filename in os.listdir(self.save_dir):
             if not filename.endswith(".npz"):
                 continue
             filepath = os.path.join(self.save_dir, filename)
             with np.load(filepath, allow_pickle=True) as saved_record:
-                if "context_seed" in saved_record.files:
-                    next_seed = max(next_seed, int(saved_record["context_seed"]) + 1)
+                if "context_seed" not in saved_record.files:
+                    missing_seed_files.append(filename)
+                    continue
+                next_seed = max(next_seed, int(saved_record["context_seed"]) + 1)
+        if missing_seed_files:
+            examples = ", ".join(sorted(missing_seed_files)[:5])
+            remainder = len(missing_seed_files) - 5
+            if remainder > 0:
+                examples += f", and {remainder} more"
+            raise ValueError(
+                "Cannot safely append to this dataset: "
+                f"{len(missing_seed_files)} .npz file(s) lack context_seed ({examples}). "
+                "Duplicate seeds cannot be checked reliably against these records. "
+                "Collect a fresh dataset in a new --save-dir before appending."
+            )
         return next_seed
 
     def collect_n_episodes(
