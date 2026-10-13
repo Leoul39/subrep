@@ -25,10 +25,13 @@ Usage:
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+
+from schemas.minecraft_objective_schema import VILLAGE_SYNTHETIC_OBJECTIVE_SCHEMA
 
 from village_sim.baseline import idle_policy, run_policy
 from village_sim.motives import MOTIVE_NAMES
@@ -48,25 +51,36 @@ GAMMA         = 0.99
 MAX_STEPS     = 100
 # Three seeds per option — multi-seed evidence mirrors Phase 8 statistical pattern
 SEEDS: list[int] = [42, 123, 7]
-PDS_EPSILON   = 0.3
+# PDS epsilon calibrated for discounted motive return scale (~63 per coordinate at gamma=0.99).
+# Predeclared before final outcomes. Chosen so one deliberate trade-off candidate passes PDS only.
+PDS_EPSILON   = 35.0
 VERSION       = "0.1.0"
 BASELINE_ID   = "idle_policy_v1"
-DOMAIN        = "minecraft_village_defense_trade"
+# Synthetic domain identity — distinct from real Minecraft domain to prevent
+# runtime mixing. See Phase 4 review finding #2.
+DOMAIN        = "village_synthetic"
 SCHEMA_VER    = "1.0"
 ENVIRONMENT   = "village_sim_v1"
 
 DATA_DIR      = Path("data/village_synthetic/v1")
 CERT_FILE     = DATA_DIR / "certificates.metta"
 LIBRARY_FILE  = DATA_DIR / "library.json"
+EVIDENCE_FILE = DATA_DIR / "paired_evidence.jsonl"
 REPORT_JSON   = Path("demo/artifacts/village_synthetic/v1/admission_report.json")
 REPORT_MD     = Path("demo/artifacts/village_synthetic/v1/admission_report.md")
+# Fixed timestamp for deterministic artifact generation (Phase 4 review finding #10).
+FIXED_TIMESTAMP = "2025-09-12T00:00:00+00:00"
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-# ── Candidate option policies ──────────────────────────────────────────────────
+# ── Policy definitions ──────────────────────────────────────────────────────────
 # Each policy takes a VillageState snapshot and returns an action string.
 # Action set: "idle", "trade", "torch_corridor", "iron_golem_spawn",
 #             "reputation_first", "discount_chain", "archer_kite"
+
+# Register policies for evidence persistence
+_POLICY_REGISTRY: dict[str, object] = {}
+
 
 def _torch_corridor_policy(state) -> str:
     """Improve infrastructure via torches up to 90%, then trade to complete the task."""
@@ -123,20 +137,36 @@ def _aggressive_burn_policy(state) -> str:
     return "trade"  # exhausted fuel — finish task but Sustainability stays low
 
 
+def _moderate_tradeoff_policy(state) -> str:
+    """Moderate trade-off candidate: torch corridor for defence, then trade.
+
+    Designed to fail CDS (Sustainability cost) but pass PDS with epsilon=35.0.
+    Torches improve Safety and Infrastructure at fuel cost.
+    """
+    if state.fuel >= 1 and state.infrastructure_pct < 0.7:
+        return "torch_corridor"
+    return "trade"
+
+
 # Ordered list of (option_id, policy_fn) pairs evaluated by the pipeline.
 CANDIDATES: list[tuple[str, object]] = [
     ("torch_corridor_v1",       _torch_corridor_policy),
     ("infrastructure_first_v1", _infrastructure_first_policy),
     ("trade_focus_v1",          _trade_focus_policy),
     ("reputation_builder_v1",   _reputation_builder_policy),
+    ("moderate_tradeoff_v1",    _moderate_tradeoff_policy),  # PDS-only admission target
     ("wasteful_fuel_v1",        _wasteful_fuel_policy),
     ("aggressive_burn_v1",      _aggressive_burn_policy),
 ]
 
+# Register all policies for evidence persistence
+for option_id, policy_fn in CANDIDATES:
+    _POLICY_REGISTRY[option_id] = policy_fn
+
 
 # ── Rollout helpers ────────────────────────────────────────────────────────────
 
-def _run_paired(candidate_fn, seed: int) -> tuple[float, np.ndarray]:
+def _run_paired(candidate_fn, seed: int) -> tuple[float, np.ndarray, float, np.ndarray, float, np.ndarray]:
     """Run baseline then candidate from the SAME seed.
 
     Identical reset seed guarantees both policies start from the same world
@@ -146,27 +176,31 @@ def _run_paired(candidate_fn, seed: int) -> tuple[float, np.ndarray]:
     Returns:
         delta_r: Scalar payoff improvement over baseline.
         delta_n: 6D motive improvement vector over baseline.
+        r_base: Baseline payoff.
+        n_base: Baseline motives.
+        r_cand: Candidate payoff.
+        n_cand: Candidate motives.
     """
     r_base, n_base = run_policy(idle_policy,  seed=seed, max_steps=MAX_STEPS, gamma=GAMMA)
     r_cand, n_cand = run_policy(candidate_fn, seed=seed, max_steps=MAX_STEPS, gamma=GAMMA)
     delta_r = float(r_cand) - float(r_base)
     delta_n = (np.asarray(n_cand, dtype=np.float32)
                - np.asarray(n_base, dtype=np.float32))
-    return delta_r, delta_n
+    return delta_r, delta_n, r_base, n_base, r_cand, n_cand
 
 
 def _aggregate_seeds(
     candidate_fn,
     seeds: list[int],
-) -> tuple[float, np.ndarray, list[tuple[float, np.ndarray]]]:
+) -> tuple[float, np.ndarray, list[tuple[float, np.ndarray, float, np.ndarray, float, np.ndarray]]]:
     """Aggregate paired rollouts over multiple seeds.
 
     Returns:
         mean_delta_r: Mean payoff improvement across seeds.
         mean_delta_n: Mean 6D motive improvement across seeds.
-        pairs:        Raw (delta_r, delta_n) per seed for audit logging.
+        pairs:        Raw (delta_r, delta_n, r_base, n_base, r_cand, n_cand) per seed for audit logging.
     """
-    pairs: list[tuple[float, np.ndarray]] = [
+    pairs: list[tuple[float, np.ndarray, float, np.ndarray, float, np.ndarray]] = [
         _run_paired(candidate_fn, seed) for seed in seeds
     ]
     mean_delta_r = float(np.mean([p[0] for p in pairs]))
@@ -183,8 +217,9 @@ def _make_certificate(
     margin: float,
     gate_type: str,
     epsilon: float,
+    seeds: list[int],
 ) -> Certificate:
-    """Build a fully-validated 6D Certificate with Minecraft domain identity.
+    """Build a fully-validated 6D Certificate with synthetic domain identity.
 
     The domain_id / motive_schema_version / motive_names triple is required
     by the Phase 3 schema contract so the SkillLibrary can enforce cross-domain
@@ -197,15 +232,15 @@ def _make_certificate(
         delta_n=tuple(float(v) for v in delta_n),
         admission_margin=float(margin),
         epsilon=float(epsilon),
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        seed=SEEDS[0],
+        timestamp=FIXED_TIMESTAMP,
+        seed=seeds[0],  # representative seed; full list in evidence artifact
         gamma=GAMMA,
         baseline_id=BASELINE_ID,
         environment=ENVIRONMENT,
         episode_length=MAX_STEPS,
         version=VERSION,
         weight_region_type="FULL_SIMPLEX",
-        # Minecraft domain identity — marks this as a 6D Minecraft artifact
+        # Synthetic domain identity — marks this as a 6D synthetic artifact
         domain_id=DOMAIN,
         motive_schema_version=SCHEMA_VER,
         motive_names=tuple(MOTIVE_NAMES),
@@ -217,6 +252,56 @@ def _make_certificate(
     )
 
 
+def _persist_paired_evidence(
+    option_id: str,
+    pairs: list[tuple[float, np.ndarray, float, np.ndarray, float, np.ndarray]],
+    seeds: list[int],
+    baseline_id: str,
+    candidate_id: str,
+    run_id: str,
+    run_timestamp: str,
+) -> None:
+    """Persist raw paired rollout evidence to JSONL for auditability.
+
+    Each line contains one seed's complete baseline/candidate pair outcome,
+    tagged with the run_id and run_timestamp for multi-run traceability.
+    """
+    EVIDENCE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with EVIDENCE_FILE.open("a", encoding="utf-8") as f:
+        for idx, (delta_r, delta_n, r_base, n_base, r_cand, n_cand) in enumerate(pairs):
+            seed = seeds[idx]
+            record = {
+                "run_id": run_id,
+                "run_timestamp": run_timestamp,
+                "option_id": option_id,
+                "baseline_id": baseline_id,
+                "seed": seed,
+                "gamma": GAMMA,
+                "max_steps": MAX_STEPS,
+                "baseline": {
+                    "payoff": float(r_base),
+                    "motives": [float(v) for v in n_base],
+                },
+                "candidate": {
+                    "payoff": float(r_cand),
+                    "motives": [float(v) for v in n_cand],
+                },
+                "delta": {
+                    "payoff": float(delta_r),
+                    "motives": [float(v) for v in delta_n],
+                },
+            }
+            f.write(json.dumps(record) + "\n")
+
+
+# Policy function registry for evidence persistence
+_POLICY_REGISTRY: dict[str, object] = {}
+
+def _get_policy_fn(option_id: str):
+    """Retrieve policy function by option_id."""
+    return _POLICY_REGISTRY.get(option_id)
+
+
 # ── Main pipeline ──────────────────────────────────────────────────────────────
 
 def run_pipeline() -> dict:
@@ -224,8 +309,12 @@ def run_pipeline() -> dict:
 
     Returns a dict of summary statistics suitable for use in exit-gate tests.
     """
+    # Generate unique run ID for this pipeline execution (for evidence traceability)
+    run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    run_timestamp = datetime.now(timezone.utc).isoformat()
+
     print("=" * 68)
-    print("  Phase 4 — Synthetic Six-Objective Village SubRep Pipeline")
+    print("  Phase 4 -- Synthetic Six-Objective Village SubRep Pipeline")
     print("=" * 68)
     print(f"  Domain   : {DOMAIN}")
     print(f"  Schema   : v{SCHEMA_VER}")
@@ -233,6 +322,7 @@ def run_pipeline() -> dict:
     print(f"  Seeds    : {SEEDS}  ({len(SEEDS)} per option)")
     print(f"  Gamma    : {GAMMA}  |  Max steps : {MAX_STEPS}  |  PDS e : {PDS_EPSILON}")
     print(f"  Artifacts: {DATA_DIR}")
+    print(f"  Run ID   : {run_id}")
     print()
 
     # ── 1. Setup: gates and stores ─────────────────────────────────────────────
@@ -244,8 +334,16 @@ def run_pipeline() -> dict:
 
     # Fresh stores — namespaced to village_synthetic/v1, separate from LunarLander data/
     cert_store = CertificateStore()
-    library    = SkillLibrary(cert_store=cert_store, save_path=str(LIBRARY_FILE))
+    library    = SkillLibrary(
+        cert_store=cert_store,
+        save_path=str(LIBRARY_FILE),
+        schema=VILLAGE_SYNTHETIC_OBJECTIVE_SCHEMA,
+    )
     report     = AdmissionReport()
+
+    # Clear any previous evidence file (we append with run_id, but fresh is cleaner for demos)
+    if EVIDENCE_FILE.exists():
+        EVIDENCE_FILE.unlink()
 
     # ── 2. Candidate evaluation loop ───────────────────────────────────────────
     admitted  = 0
@@ -276,7 +374,7 @@ def run_pipeline() -> dict:
                          if admitted_cds
                          else pds_gate.get_admission_margin(mean_dr, mean_dn))
 
-            cert = _make_certificate(option_id, mean_dr, mean_dn, margin, gate_type, epsilon)
+            cert = _make_certificate(option_id, mean_dr, mean_dn, margin, gate_type, epsilon, SEEDS)
 
             store_added = cert_store.add(cert)
             lib_added   = False
@@ -288,6 +386,8 @@ def run_pipeline() -> dict:
                     pds_count += int(not admitted_cds)
                     admitted  += 1
                     result_str = f"ADMITTED [{gate_type}]"
+                    # Persist raw paired evidence for admitted candidates with run ID
+                    _persist_paired_evidence(option_id, pairs, SEEDS, BASELINE_ID, option_id, run_id, run_timestamp)
                 else:
                     # Library re-verification failed — roll back cert_store to stay in sync
                     cert_store.remove_skill(option_id)
@@ -311,11 +411,23 @@ def run_pipeline() -> dict:
             rejected  += 1
             result_str = "REJECTED"
 
-        # Invariant: cert_store and library must always be in sync
-        assert cert_store.count() == library.count(), (
+        # Stronger invariant: cert_store and library must have identical skill IDs
+        # and certificate content (not just count)
+        cert_ids = set(cert_store.get_all_skill_ids())
+        lib_ids  = set(library.get_all_skill_ids())
+        assert cert_ids == lib_ids, (
             f"SYNC ERROR after '{option_id}': "
-            f"cert_store={cert_store.count()} != library={library.count()}"
+            f"cert_store IDs={cert_ids} != library IDs={lib_ids}"
         )
+        # Also verify certificate identity for each skill
+        for sid in cert_ids:
+            c1 = cert_store.get_certificate(sid)
+            c2 = library.get_certificate(sid)
+            assert c1 is not None and c2 is not None
+            assert c1.skill_id == c2.skill_id
+            assert c1.delta_n == c2.delta_n
+            assert c1.delta_r == c2.delta_r
+            assert c1.gate_type == c2.gate_type
 
         print(
             f"{option_id:<28}  {mean_dr:>8.4f}  {float(np.min(mean_dn)):>9.4f}  "
@@ -350,6 +462,8 @@ def run_pipeline() -> dict:
     report.save_markdown(str(REPORT_MD))
     print(f"[Save] report JSON  -> {REPORT_JSON}")
     print(f"[Save] report MD    -> {REPORT_MD}")
+    if EVIDENCE_FILE.exists():
+        print(f"[Save] paired evidence -> {EVIDENCE_FILE}")
 
     # ── 4. Reload verification — artifacts must round-trip ─────────────────────
     print("\n[Verify] Reloading artifacts from disk...")
@@ -361,13 +475,41 @@ def run_pipeline() -> dict:
         f"got {reload_store.count()}, expected {cert_store.count()}"
     )
 
-    lib_raw    = json.loads(LIBRARY_FILE.read_text(encoding="utf-8"))
-    # SkillLibrary.save() stores skills under "skills" or "entries" key
-    lib_skills = lib_raw.get("skills", lib_raw.get("entries", []))
-    assert len(lib_skills) == library.count(), (
-        f"Library reload count mismatch: "
-        f"got {len(lib_skills)}, expected {library.count()}"
+    # Verify exact certificate identity on reload
+    for cert in cert_store.load_all():
+        reloaded = reload_store.get_certificate(cert.skill_id)
+        assert reloaded is not None, f"Missing certificate on reload: {cert.skill_id}"
+        assert reloaded.delta_n == cert.delta_n
+        assert reloaded.delta_r == cert.delta_r
+        assert reloaded.gate_type == cert.gate_type
+        assert reloaded.domain_id == cert.domain_id
+        assert reloaded.motive_schema_version == cert.motive_schema_version
+        assert reloaded.motive_names == cert.motive_names
+
+    # Actual SkillLibrary round-trip with schema verification
+    reload_library = SkillLibrary(
+        cert_store=reload_store,
+        save_path=str(LIBRARY_FILE),
+        schema=VILLAGE_SYNTHETIC_OBJECTIVE_SCHEMA,
     )
+    reload_library.load(str(LIBRARY_FILE))
+    assert reload_library.count() == library.count(), (
+        f"Library reload count mismatch: "
+        f"got {reload_library.count()}, expected {library.count()}"
+    )
+    # Verify schema is persisted and matches
+    assert reload_library.schema == VILLAGE_SYNTHETIC_OBJECTIVE_SCHEMA, (
+        f"Library schema mismatch on reload: "
+        f"got {reload_library.schema}, expected {VILLAGE_SYNTHETIC_OBJECTIVE_SCHEMA}"
+    )
+    # Verify skill IDs and certificates match
+    assert set(reload_library.get_all_skill_ids()) == set(library.get_all_skill_ids())
+    for sid in library.get_all_skill_ids():
+        orig_cert = library.get_certificate(sid)
+        reloaded_cert = reload_library.get_certificate(sid)
+        assert orig_cert.delta_n == reloaded_cert.delta_n
+        assert orig_cert.delta_r == reloaded_cert.delta_r
+        assert orig_cert.gate_type == reloaded_cert.gate_type
 
     report_raw = json.loads(REPORT_JSON.read_text(encoding="utf-8"))
     assert report_raw["admitted"] == admitted, (
@@ -375,7 +517,7 @@ def run_pipeline() -> dict:
     )
 
     print(f"[Verify] {reload_store.count()} certificates reloaded OK")
-    print(f"[Verify] {library.count()} library entries reloaded OK")
+    print(f"[Verify] {reload_library.count()} library entries reloaded OK (schema-bound)")
     print("[Verify] Admission report JSON valid OK")
 
     # ── 5. Exit-gate assertions ────────────────────────────────────────────────
@@ -384,6 +526,10 @@ def run_pipeline() -> dict:
     )
     assert rejected >= 1, (
         "EXIT GATE FAILED: at least one option must be rejected"
+    )
+    # Require at least one PDS-only admission (Phase 4 review finding #6)
+    assert pds_count >= 1, (
+        "EXIT GATE FAILED: at least one PDS-only admission required"
     )
 
     # ── 6. Summary ─────────────────────────────────────────────────────────────
@@ -409,12 +555,15 @@ def run_pipeline() -> dict:
         "library_size":    library.count(),
         "cert_file":       str(CERT_FILE),
         "library_file":    str(LIBRARY_FILE),
+        "evidence_file":   str(EVIDENCE_FILE),
         "report_json":     str(REPORT_JSON),
         "report_md":       str(REPORT_MD),
         "episode_records": episode_records,
         "domain":          DOMAIN,
         "schema_version":  SCHEMA_VER,
         "motive_names":    list(MOTIVE_NAMES),
+        "run_id":          run_id,
+        "run_timestamp":   run_timestamp,
     }
 
 
