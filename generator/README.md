@@ -152,9 +152,9 @@ shared context and multiple candidate policy outcomes from that same reset seed.
 Recommended training collection:
 
 ```bash
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets --seed 10000 --prefix seed10000
 python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets --seed 11000 --prefix seed11000
 python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets --seed 12000 --prefix seed12000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets --seed 13000 --prefix seed13000
 ```
 
 This gives 3,000 contexts and 21,000 candidate outcomes with the default seven
@@ -163,12 +163,12 @@ candidate policies.
 Recommended held-out collection:
 
 ```bash
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 3000 --prefix seed3000
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 4000 --prefix seed4000
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 5000 --prefix seed5000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 8000 --prefix seed8000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 9000 --prefix seed9000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 10000 --prefix seed10000
 ```
 
-These runs produce context-seed ranges 3001-4000, 4001-5000, and 5001-6000.
+These runs produce context-seed ranges 8001-9000, 9001-10000, and 10001-11000.
 They do not overlap the SkillGenerator training range 42-2041. Each context seed
 is `base_seed + context_index` for indices 1-1000. The report checks evaluation
 seeds against every training record before producing results.

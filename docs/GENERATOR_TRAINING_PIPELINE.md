@@ -26,13 +26,13 @@ The collector uses `context_seed = --seed + context_index` with indices 1-1000.
 Use these ranges after training seeds 42-2041; the report also checks the
 evaluation seeds against every training `.npz` file before producing results:
 ```bash
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 3000 --prefix seed3000
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 4000 --prefix seed4000
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 5000 --prefix seed5000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 8000 --prefix seed8000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 9000 --prefix seed9000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 10000 --prefix seed10000
 ```
 
-These runs produce disjoint context-seed ranges 3001-4000, 4001-5000, and
-5001-6000. Keep only the intended held-out files in this eval directory. For
+These runs produce disjoint context-seed ranges 8001-9000, 9001-10000, and
+10001-11000. Keep only the intended held-out files in this eval directory. For
 training data in a different location, pass `--training-data-dir` to the report
 command.
 
@@ -65,7 +65,7 @@ demonstrably learned a useful, state-dependent pattern.
 ## 5. Certification-focused report on held-out seeds
 
 ```bash
-python -m generator.evaluate_generator_report --model-path models/generator.pt --eval-dir data/mdn_candidate_sets_eval_heldout
+python -m generator.evaluate_generator_report --model-path models/generator.pt --eval-dir data/mdn_candidate_sets_eval
 ```
 
 The evaluator reads every `.npz` file in `--eval-dir`; the three runs above are
@@ -116,9 +116,9 @@ written to `demo/artifacts/`; plots are written to
 
 ```bash
 python -m data_collector.collect --episodes 2000 --save-dir data/raw --seed 42
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 3000 --prefix seed3000
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 4000 --prefix seed4000
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 5000 --prefix seed5000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 8000 --prefix seed8000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 9000 --prefix seed9000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 10000 --prefix seed10000
 python -m generator.train_generator --data-dir data/raw --output models/generator.pt
 python -m generator.evaluate_generator_mse --model-path models/generator.pt --data-dir data/raw
 python -m generator.evaluate_generator_report --model-path models/generator.pt --eval-dir data/mdn_candidate_sets_eval
