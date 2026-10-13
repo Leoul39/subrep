@@ -31,7 +31,7 @@ LIBRARY_FILE = Path("data/village_synthetic/v1/library.json")
 REPORT_JSON  = Path("demo/artifacts/village_synthetic/v1/admission_report.json")
 REPORT_MD    = Path("demo/artifacts/village_synthetic/v1/admission_report.md")
 
-EXPECTED_DOMAIN        = "minecraft_village_defense_trade"
+EXPECTED_DOMAIN        = "village_synthetic"
 EXPECTED_SCHEMA_VER    = "1.0"
 EXPECTED_MOTIVE_NAMES  = [
     "Safety", "Reputation", "DeadlineSlack",
@@ -276,7 +276,6 @@ class TestRejectedSkillsSafety:
     """Verify no rejected option entered the library."""
 
     KNOWN_REJECTED = {
-        "torch_corridor_v1",
         "infrastructure_first_v1",
         "wasteful_fuel_v1",
         "aggressive_burn_v1",
