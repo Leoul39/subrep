@@ -92,7 +92,7 @@ class VillageEnv:
 
         motives = phi(s)
         done = s.is_terminal()
-        task_reward = self._compute_task_reward(done)
+        task_reward = self._compute_task_reward()
         info = {
             "task_reward": task_reward,
             "task_payoff": float(task_reward),
@@ -121,14 +121,14 @@ class VillageEnv:
         if action == "archer_kite" and not s.raid_active:
             raise ValueError("Cannot use archer kite: no raid is active")
 
-    def _compute_task_reward(self, done: bool) -> float:
+    def _compute_task_reward(self) -> float:
         s = self.state
         if s.task_completed:
             return 0.0
         if s.inventory_value >= DELIVERY_TARGET and s.time_step < s.total_steps:
             s.task_completed = True
             return 1.0
-        if done:
+        if s.is_terminal():
             return -1.0
         return 0.0
 

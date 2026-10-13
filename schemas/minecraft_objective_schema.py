@@ -60,3 +60,20 @@ SAFETY_GYMNASIUM_OBJECTIVE_SCHEMA = ObjectiveSchema(
     motive_schema_version="1.0",
     motive_names=("Safety", "Task"),
 )
+
+# Synthetic village proxy schema — distinct from real Minecraft domain
+# to prevent runtime mixing (Phase 4 review finding #2).
+VILLAGE_SYNTHETIC_MOTIVE_NAMES: tuple[str, ...] = (
+    "Safety",
+    "Reputation",
+    "DeadlineSlack",
+    "InventoryValue",
+    "Sustainability",
+    "Infrastructure",
+)
+
+VILLAGE_SYNTHETIC_OBJECTIVE_SCHEMA = ObjectiveSchema(
+    domain_id="village_synthetic",
+    motive_schema_version="1.0",
+    motive_names=VILLAGE_SYNTHETIC_MOTIVE_NAMES,
+)
