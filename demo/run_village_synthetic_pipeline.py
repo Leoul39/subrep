@@ -62,12 +62,13 @@ DOMAIN        = "village_synthetic"
 SCHEMA_VER    = "1.0"
 ENVIRONMENT   = "village_sim_v1"
 
-DATA_DIR      = Path("data/village_synthetic/v1")
-CERT_FILE     = DATA_DIR / "certificates.metta"
-LIBRARY_FILE  = DATA_DIR / "library.json"
-EVIDENCE_FILE = DATA_DIR / "paired_evidence.jsonl"
-REPORT_JSON   = Path("demo/artifacts/village_synthetic/v1/admission_report.json")
-REPORT_MD     = Path("demo/artifacts/village_synthetic/v1/admission_report.md")
+# Default artifact paths (can be overridden via run_pipeline() arguments)
+DEFAULT_DATA_DIR      = Path("data/village_synthetic/v1")
+DEFAULT_CERT_FILE     = DEFAULT_DATA_DIR / "certificates.metta"
+DEFAULT_LIBRARY_FILE  = DEFAULT_DATA_DIR / "library.json"
+DEFAULT_EVIDENCE_FILE = DEFAULT_DATA_DIR / "paired_evidence.jsonl"
+DEFAULT_REPORT_JSON   = Path("demo/artifacts/village_synthetic/v1/admission_report.json")
+DEFAULT_REPORT_MD     = Path("demo/artifacts/village_synthetic/v1/admission_report.md")
 # Fixed timestamp for deterministic artifact generation (Phase 4 review finding #10).
 FIXED_TIMESTAMP = "2025-09-12T00:00:00+00:00"
 # ──────────────────────────────────────────────────────────────────────────────
@@ -260,14 +261,15 @@ def _persist_paired_evidence(
     candidate_id: str,
     run_id: str,
     run_timestamp: str,
+    evidence_file: Path,
 ) -> None:
     """Persist raw paired rollout evidence to JSONL for auditability.
 
     Each line contains one seed's complete baseline/candidate pair outcome,
     tagged with the run_id and run_timestamp for multi-run traceability.
     """
-    EVIDENCE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with EVIDENCE_FILE.open("a", encoding="utf-8") as f:
+    evidence_file.parent.mkdir(parents=True, exist_ok=True)
+    with evidence_file.open("a", encoding="utf-8") as f:
         for idx, (delta_r, delta_n, r_base, n_base, r_cand, n_cand) in enumerate(pairs):
             seed = seeds[idx]
             record = {
@@ -304,11 +306,34 @@ def _get_policy_fn(option_id: str):
 
 # ── Main pipeline ──────────────────────────────────────────────────────────────
 
-def run_pipeline() -> dict:
+def run_pipeline(
+    data_dir: Path | None = None,
+    cert_file: Path | None = None,
+    library_file: Path | None = None,
+    evidence_file: Path | None = None,
+    report_json: Path | None = None,
+    report_md: Path | None = None,
+) -> dict:
     """Run the Phase 4 synthetic six-objective village pipeline.
+
+    Args:
+        data_dir: Base directory for data artifacts (default: data/village_synthetic/v1)
+        cert_file: Certificate output path
+        library_file: SkillLibrary output path
+        evidence_file: Paired evidence JSONL output path
+        report_json: Admission report JSON output path
+        report_md: Admission report Markdown output path
 
     Returns a dict of summary statistics suitable for use in exit-gate tests.
     """
+    # Resolve paths (use defaults if not provided)
+    data_dir = data_dir or DEFAULT_DATA_DIR
+    cert_file = cert_file or data_dir / "certificates.metta"
+    library_file = library_file or data_dir / "library.json"
+    evidence_file = evidence_file or data_dir / "paired_evidence.jsonl"
+    report_json = report_json or DEFAULT_REPORT_JSON
+    report_md = report_md or DEFAULT_REPORT_MD
+
     # Generate unique run ID for this pipeline execution (for evidence traceability)
     run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     run_timestamp = datetime.now(timezone.utc).isoformat()
@@ -321,7 +346,7 @@ def run_pipeline() -> dict:
     print(f"  Motives  : {MOTIVE_NAMES}")
     print(f"  Seeds    : {SEEDS}  ({len(SEEDS)} per option)")
     print(f"  Gamma    : {GAMMA}  |  Max steps : {MAX_STEPS}  |  PDS e : {PDS_EPSILON}")
-    print(f"  Artifacts: {DATA_DIR}")
+    print(f"  Artifacts: {data_dir}")
     print(f"  Run ID   : {run_id}")
     print()
 
@@ -329,21 +354,21 @@ def run_pipeline() -> dict:
     cds_gate = CDSGate()
     pds_gate = PDSGate(epsilon=PDS_EPSILON)
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    REPORT_JSON.parent.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    report_json.parent.mkdir(parents=True, exist_ok=True)
 
     # Fresh stores — namespaced to village_synthetic/v1, separate from LunarLander data/
     cert_store = CertificateStore()
     library    = SkillLibrary(
         cert_store=cert_store,
-        save_path=str(LIBRARY_FILE),
+        save_path=str(library_file),
         schema=VILLAGE_SYNTHETIC_OBJECTIVE_SCHEMA,
     )
     report     = AdmissionReport()
 
     # Clear any previous evidence file (we append with run_id, but fresh is cleaner for demos)
-    if EVIDENCE_FILE.exists():
-        EVIDENCE_FILE.unlink()
+    if evidence_file.exists():
+        evidence_file.unlink()
 
     # ── 2. Candidate evaluation loop ───────────────────────────────────────────
     admitted  = 0
@@ -387,7 +412,7 @@ def run_pipeline() -> dict:
                     admitted  += 1
                     result_str = f"ADMITTED [{gate_type}]"
                     # Persist raw paired evidence for admitted candidates with run ID
-                    _persist_paired_evidence(option_id, pairs, SEEDS, BASELINE_ID, option_id, run_id, run_timestamp)
+                    _persist_paired_evidence(option_id, pairs, SEEDS, BASELINE_ID, option_id, run_id, run_timestamp, evidence_file)
                 else:
                     # Library re-verification failed — roll back cert_store to stay in sync
                     cert_store.remove_skill(option_id)
@@ -453,23 +478,23 @@ def run_pipeline() -> dict:
 
     # ── 3. Persist artifacts ───────────────────────────────────────────────────
     print()
-    cert_store.save_to_file(str(CERT_FILE))
-    library.save(str(LIBRARY_FILE))
-    print(f"[Save] certificates -> {CERT_FILE}")
-    print(f"[Save] library      -> {LIBRARY_FILE}")
+    cert_store.save_to_file(str(cert_file))
+    library.save(str(library_file))
+    print(f"[Save] certificates -> {cert_file}")
+    print(f"[Save] library      -> {library_file}")
 
-    report.save_json(str(REPORT_JSON))
-    report.save_markdown(str(REPORT_MD))
-    print(f"[Save] report JSON  -> {REPORT_JSON}")
-    print(f"[Save] report MD    -> {REPORT_MD}")
-    if EVIDENCE_FILE.exists():
-        print(f"[Save] paired evidence -> {EVIDENCE_FILE}")
+    report.save_json(str(report_json))
+    report.save_markdown(str(report_md))
+    print(f"[Save] report JSON  -> {report_json}")
+    print(f"[Save] report MD    -> {report_md}")
+    if evidence_file.exists():
+        print(f"[Save] paired evidence -> {evidence_file}")
 
     # ── 4. Reload verification — artifacts must round-trip ─────────────────────
     print("\n[Verify] Reloading artifacts from disk...")
 
     reload_store = CertificateStore()
-    reload_store.load_from_file(str(CERT_FILE))
+    reload_store.load_from_file(str(cert_file))
     assert reload_store.count() == cert_store.count(), (
         f"Cert reload count mismatch: "
         f"got {reload_store.count()}, expected {cert_store.count()}"
@@ -489,10 +514,10 @@ def run_pipeline() -> dict:
     # Actual SkillLibrary round-trip with schema verification
     reload_library = SkillLibrary(
         cert_store=reload_store,
-        save_path=str(LIBRARY_FILE),
+        save_path=str(library_file),
         schema=VILLAGE_SYNTHETIC_OBJECTIVE_SCHEMA,
     )
-    reload_library.load(str(LIBRARY_FILE))
+    reload_library.load(str(library_file))
     assert reload_library.count() == library.count(), (
         f"Library reload count mismatch: "
         f"got {reload_library.count()}, expected {library.count()}"
@@ -511,7 +536,7 @@ def run_pipeline() -> dict:
         assert orig_cert.delta_r == reloaded_cert.delta_r
         assert orig_cert.gate_type == reloaded_cert.gate_type
 
-    report_raw = json.loads(REPORT_JSON.read_text(encoding="utf-8"))
+    report_raw = json.loads(report_json.read_text(encoding="utf-8"))
     assert report_raw["admitted"] == admitted, (
         f"Report admitted mismatch: got {report_raw['admitted']}, expected {admitted}"
     )
@@ -548,22 +573,23 @@ def run_pipeline() -> dict:
     print("=" * 68 + "\n")
 
     return {
-        "admitted":        admitted,
-        "rejected":        rejected,
-        "cds_count":       cds_count,
-        "pds_count":       pds_count,
-        "library_size":    library.count(),
-        "cert_file":       str(CERT_FILE),
-        "library_file":    str(LIBRARY_FILE),
-        "evidence_file":   str(EVIDENCE_FILE),
-        "report_json":     str(REPORT_JSON),
-        "report_md":       str(REPORT_MD),
-        "episode_records": episode_records,
-        "domain":          DOMAIN,
-        "schema_version":  SCHEMA_VER,
-        "motive_names":    list(MOTIVE_NAMES),
-        "run_id":          run_id,
-        "run_timestamp":   run_timestamp,
+        "admitted":         admitted,
+        "rejected":         rejected,
+        "total_attempted":  admitted + rejected,
+        "cds_count":        cds_count,
+        "pds_count":        pds_count,
+        "library_size":     library.count(),
+        "cert_file":        str(cert_file),
+        "library_file":     str(library_file),
+        "evidence_file":    str(evidence_file),
+        "report_json":      str(report_json),
+        "report_md":        str(report_md),
+        "episode_records":  episode_records,
+        "domain":           DOMAIN,
+        "schema_version":   SCHEMA_VER,
+        "motive_names":     list(MOTIVE_NAMES),
+        "run_id":           run_id,
+        "run_timestamp":    run_timestamp,
     }
 
 
