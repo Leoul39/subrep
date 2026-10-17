@@ -347,6 +347,15 @@ class SkillLibrary:
         """Return the number of skills in the library."""
         return len(self._skills)
 
+    def get_all_skill_ids(self) -> list[str]:
+        """Return all skill IDs in the library."""
+        return list(self._skills.keys())
+
+    def get_certificate(self, skill_id: str) -> Certificate | None:
+        """Get the certificate for a skill by ID."""
+        entry = self._skills.get(skill_id)
+        return entry.certificate if entry else None
+
     def query_by_schema(self, schema: "ObjectiveSchema") -> "List[SkillEntry]":
         """
         Return skills whose certificate is strictly compatible with *schema*.

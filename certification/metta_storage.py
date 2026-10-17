@@ -131,6 +131,10 @@ class CertificateStore:
     def count(self) -> int:
         return len(self._certificates)
 
+    def get_all_skill_ids(self) -> list[str]:
+        """Return all skill IDs in the store."""
+        return list(self._certificates.keys())
+
     def save_to_file(self, path: str | Path) -> None:
         """Persist all certificates as one deterministic expression per line."""
         file_path = Path(path)
