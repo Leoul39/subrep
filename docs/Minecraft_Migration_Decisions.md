@@ -12,8 +12,6 @@ keeps only the decisions that **constrain implementation choices** — the ones 
 are expensive to retrofit once a server, sidecar, and real certificates exist.
 Everything else is explicitly deferred (see §5).
 
-Each decision below is an ADR: context → decision → consequence. The code prompts
-that implement the actionable parts live in `OPENCODE_PROMPTS.md`.
 
 ---
 
@@ -157,11 +155,3 @@ from day one.
 These earn their keep once a real server is running with multiple contributors.
 Deferring them does not block Phase 5.
 
-## 6. Phase 0-lite exit gate
-
-- [ ] This document reviewed (it is the RFC-lite)
-- [ ] Feature-flag module merged with tests green (prompt 1)
-- [ ] CI runs on PRs targeting `minecraft_sim` (prompt 2)
-- [ ] Rejected-candidate evidence persisted (prompt 4)
-
-When all four are done, Phase 5 may begin.
