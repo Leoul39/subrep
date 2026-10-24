@@ -6,6 +6,7 @@ termination controls, and supports payoff scalarization override.
 """
 
 import numpy as np
+from gymnasium.spaces import Box
 from env.lunar_lander_wrapper import SubRepEnv
 from env.skill_executor import SkillExecutor
 
@@ -363,14 +364,16 @@ def test_registry_make_village():
 
 
 def test_registry_make_safety_gymnasium_with_fake_backend():
-    """make_env('safety_gymnasium', env=...) works with a fake backend."""
+    """make_env('safety_gymnasium', make_env=...) works with a fake backend."""
     class _FakeBackend:
+        observation_space = Box(low=-np.inf, high=np.inf, shape=(4,), dtype=np.float32)
+        action_space = Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
         def reset(self, seed=None): return np.zeros(4), {}
         def step(self, a): return np.zeros(4), 1.0, 0.0, False, False, {}
         def close(self): pass
 
     from env.base_env import SubRepBaseEnv
-    env = make_env("safety_gymnasium", env=_FakeBackend())
+    env = make_env("safety_gymnasium", make_env=lambda *_, **__: _FakeBackend())
     assert isinstance(env, SubRepBaseEnv)
     env.close()
 

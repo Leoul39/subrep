@@ -11,7 +11,7 @@ Usage::
 
     env = make_env("lunarlander", seed=7)
     env = make_env("village", seed=42)
-    env = make_env("safety_gymnasium", env=my_fake_backend)
+    env = make_env("safety_gymnasium", make_env=my_backend_factory)
 
 Custom environments can be added at runtime::
 
@@ -121,8 +121,8 @@ def _make_village(**kwargs):
 
 
 def _make_safety_gymnasium(**kwargs):
-    from env.safety_gymnasium_wrapper import SafetyGymnasiumEnv
-    return SafetyGymnasiumEnv(**kwargs)
+    from env.safety_gymnasium_wrapper import SafeRLGymnasiumEnv
+    return SafeRLGymnasiumEnv(**kwargs)
 
 
 _REGISTRY.register("lunarlander", _make_lunarlander)
