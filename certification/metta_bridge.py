@@ -36,6 +36,14 @@ OPTIONAL_AUDIT_FIELDS = [
     "domain_id",
     "motive_schema_version",
     "motive_names",
+    # Estimation evidence behind the deltas.
+    "context_id",
+    "n_rollouts",
+    "rollout_seeds",
+    "confidence_level",
+    "lower_bound",
+    "return_scale",
+    "evidence_ref",
 ]
 CERTIFICATE_FIELDS = BASE_CERTIFICATE_FIELDS + OPTIONAL_AUDIT_FIELDS
 

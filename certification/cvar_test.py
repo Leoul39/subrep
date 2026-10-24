@@ -14,15 +14,18 @@ class CVaRGate(AdmissionGate):
 
     A skill is admitted if the CVaR of `delta_r + w^T delta_n` over
     `w ~ Dirichlet(mdn_alpha)` is non-negative at the configured confidence level.
+    With a ``seed`` the weight samples, and so every decision, can be replayed;
+    the global torch random state is left untouched.
     """
 
-    def __init__(self, confidence: float = 0.1, n_samples: int = 1000) -> None:
+    def __init__(self, confidence: float = 0.1, n_samples: int = 1000, seed: int | None = None) -> None:
         if not (0.0 < confidence <= 1.0):
             raise ValueError(f"confidence must be in (0, 1], got {confidence}")
         if n_samples < 10:
             raise ValueError(f"n_samples must be >= 10 for stable CVaR, got {n_samples}")
         self.confidence = float(confidence)
         self.n_samples = int(n_samples)
+        self.seed = seed
 
     def admit(self, delta_r: Scalar, delta_n: np.ndarray, mdn_alpha: np.ndarray) -> bool:
         self.validate_inputs(delta_r, delta_n)
@@ -47,7 +50,9 @@ class CVaRGate(AdmissionGate):
             raise ValueError("mdn_alpha must contain only finite values")
 
         alpha_tensor = torch.tensor(mdn_alpha, dtype=torch.float32)
-        with torch.no_grad():
+        with torch.no_grad(), torch.random.fork_rng(devices=[], enabled=self.seed is not None):
+            if self.seed is not None:
+                torch.manual_seed(self.seed)
             weight_samples = Dirichlet(alpha_tensor).sample((self.n_samples,)).cpu().numpy()
 
         values = delta_r + weight_samples @ delta_n

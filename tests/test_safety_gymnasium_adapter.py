@@ -75,6 +75,16 @@ def test_safety_wrapper_maps_reward_and_cost_to_subrep_motives():
     assert np.isclose(info["task_reward"], float(reward_vector[1]))
 
 
+def test_safety_wrapper_task_payoff_is_the_task_reward():
+    env = SafeRLGymnasiumEnv(env_id="FakeSafety-v0", seed=7, make_env=_make_fake_env)
+    env.reset(seed=7)
+
+    _, reward_vector, _, _, info = env.step(np.array([0.8, 0.0], dtype=np.float32))
+
+    assert info["task_payoff"] == info["task_reward"]
+    assert np.isclose(info["task_payoff"], float(reward_vector[1]))
+
+
 def test_safety_rollout_collector_saves_payoff_cost_and_motive_returns(tmp_path):
     collector = SafetyGymnasiumRolloutCollector(
         env_id="FakeSafety-v0",

@@ -2,7 +2,7 @@ name: SubRep
 
 on:
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "refactor/minecraft-environment" ]
 
 jobs:
   test:

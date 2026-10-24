@@ -23,7 +23,7 @@ Usage:
 
 Note: This module defines the schema only.  The actual Minecraft runtime
 environment, Mineflayer sidecar, Paper server connection, and SMDP option
-execution are NOT implemented here — those belong to Phase 5–7.
+execution are not implemented here.
 """
 
 from schemas.objective_schema import ObjectiveSchema
@@ -61,19 +61,13 @@ SAFETY_GYMNASIUM_OBJECTIVE_SCHEMA = ObjectiveSchema(
     motive_names=("Safety", "Task"),
 )
 
-# Synthetic village proxy schema — distinct from real Minecraft domain
-# to prevent runtime mixing (Phase 4 review finding #2).
-VILLAGE_SYNTHETIC_MOTIVE_NAMES: tuple[str, ...] = (
-    "Safety",
-    "Reputation",
-    "DeadlineSlack",
-    "InventoryValue",
-    "Sustainability",
-    "Infrastructure",
-)
+# Village simulator schema. Same motive order as the real Minecraft domain,
+# but a separate domain so simulator certificates never mix with real ones.
+# Version 2.0: bounded phi(x) features and horizon-scaled motive returns.
+VILLAGE_SYNTHETIC_MOTIVE_NAMES: tuple[str, ...] = MINECRAFT_MOTIVE_NAMES
 
 VILLAGE_SYNTHETIC_OBJECTIVE_SCHEMA = ObjectiveSchema(
     domain_id="village_synthetic",
-    motive_schema_version="1.0",
+    motive_schema_version="2.0",
     motive_names=VILLAGE_SYNTHETIC_MOTIVE_NAMES,
 )

@@ -296,3 +296,20 @@ def test_cvar_gate_uses_dirichlet_distribution():
 
     assert result_0 is True
     assert result_1 is False
+
+
+def test_seeded_cvar_gate_replays_the_same_value():
+    import torch
+
+    delta_n = np.array([0.4, -0.3, 0.1], dtype=np.float32)
+    alpha = np.array([2.0, 1.0, 3.0], dtype=np.float32)
+    first = CVaRGate(confidence=0.1, n_samples=200, seed=7).get_cvar(0.05, delta_n, alpha)
+    again = CVaRGate(confidence=0.1, n_samples=200, seed=7).get_cvar(0.05, delta_n, alpha)
+    other = CVaRGate(confidence=0.1, n_samples=200, seed=8).get_cvar(0.05, delta_n, alpha)
+    assert first == again
+    assert first != other
+
+    torch.manual_seed(123)
+    state = torch.get_rng_state()
+    CVaRGate(n_samples=200, seed=7).get_cvar(0.05, delta_n, alpha)
+    assert torch.equal(torch.get_rng_state(), state)

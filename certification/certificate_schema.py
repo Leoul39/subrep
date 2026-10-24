@@ -20,6 +20,15 @@ _MDN_AUDIT_FIELDS = (
     "wx_support_directions",
     "wx_support_values",
 )
+_EVIDENCE_FIELDS = (
+    "context_id",
+    "n_rollouts",
+    "rollout_seeds",
+    "confidence_level",
+    "lower_bound",
+    "return_scale",
+    "evidence_ref",
+)
 
 @dataclass(frozen=True)
 class Certificate:
@@ -56,6 +65,16 @@ class Certificate:
     domain_id: str | None = None
     motive_schema_version: str | None = None
     motive_names: tuple[str, ...] | None = None
+    # Optional estimation evidence: which context the deltas were measured in,
+    # how many paired rollouts back them, and the confidence bound the gate
+    # used. None for certificates issued from point estimates alone.
+    context_id: str | None = None
+    n_rollouts: int | None = None
+    rollout_seeds: tuple[int, ...] | None = None
+    confidence_level: float | None = None
+    lower_bound: float | None = None
+    return_scale: float | None = None
+    evidence_ref: str | None = None
 
     def __post_init__(self) -> None:
         # Normalize gate labels once so downstream query logic is consistent.
@@ -161,6 +180,41 @@ class Certificate:
         else:
             validate_mdn_certificate(self)
 
+        self._validate_evidence(gate_type)
+
+    def _validate_evidence(self, gate_type: str) -> None:
+        """Check the optional estimation evidence for internal consistency."""
+        for field in ("context_id", "evidence_ref"):
+            value = getattr(self, field)
+            if value is not None:
+                self._validate_non_empty_string(field, value)
+        if self.n_rollouts is not None:
+            if not isinstance(self.n_rollouts, int) or isinstance(self.n_rollouts, bool) or self.n_rollouts < 1:
+                raise ValueError(f"n_rollouts must be a positive int, got {self.n_rollouts!r}")
+        if self.rollout_seeds is not None:
+            seeds = tuple(self.rollout_seeds)
+            if not seeds or not all(isinstance(s, int) and not isinstance(s, bool) for s in seeds):
+                raise ValueError("rollout_seeds must be a non-empty tuple of ints")
+            object.__setattr__(self, "rollout_seeds", seeds)
+        if self.confidence_level is not None:
+            self._validate_finite("confidence_level", self.confidence_level)
+            if not 0.0 < float(self.confidence_level) < 1.0:
+                raise ValueError(f"confidence_level must be in (0, 1), got {self.confidence_level}")
+        if self.return_scale is not None:
+            self._validate_finite("return_scale", self.return_scale)
+            if float(self.return_scale) <= 0.0:
+                raise ValueError(f"return_scale must be > 0, got {self.return_scale}")
+        if self.lower_bound is not None:
+            self._validate_finite("lower_bound", self.lower_bound)
+            if self.confidence_level is None or self.n_rollouts is None:
+                raise ValueError("lower_bound requires confidence_level and n_rollouts")
+            threshold = 0.0 if gate_type == "CDS" else -float(self.epsilon)
+            if float(self.lower_bound) < threshold:
+                raise ValueError(
+                    f"lower_bound {self.lower_bound} does not satisfy the {gate_type} "
+                    f"threshold {threshold}"
+                )
+
     def to_dict(self) -> dict[str, Any]:
         """Convert certificate to a JSON/MeTTA serialization-ready dictionary."""
         d: dict[str, Any] = {
@@ -186,6 +240,13 @@ class Certificate:
             "domain_id": self.domain_id,
             "motive_schema_version": self.motive_schema_version,
             "motive_names": list(self.motive_names) if self.motive_names is not None else None,
+            "context_id": self.context_id,
+            "n_rollouts": self.n_rollouts,
+            "rollout_seeds": list(self.rollout_seeds) if self.rollout_seeds is not None else None,
+            "confidence_level": _optional_float(self.confidence_level),
+            "lower_bound": _optional_float(self.lower_bound),
+            "return_scale": _optional_float(self.return_scale),
+            "evidence_ref": self.evidence_ref,
         }
         return d
 
@@ -211,6 +272,15 @@ class Certificate:
             data["motive_names"] = tuple(str(n) for n in raw_names)
         else:
             data["motive_names"] = None
+        for field in _EVIDENCE_FIELDS:
+            data.setdefault(field, None)
+        # MeTTa vectors, and some Hyperon versions, return integers as floats;
+        # restore whole numbers to int and leave anything else for the
+        # constructor to reject.
+        if data["rollout_seeds"] is not None:
+            data["rollout_seeds"] = tuple(_whole_to_int(s) for s in data["rollout_seeds"])
+        for field in ("seed", "episode_length", "n_rollouts"):
+            data[field] = _whole_to_int(data.get(field))
         return cls(**data)
 
     @staticmethod
@@ -351,6 +421,16 @@ def _finite_matrix(field: str, value: Any) -> tuple[tuple[float, ...], ...]:
         if not all(isfinite(v) for v in row):
             raise ValueError(f"{field} must contain only finite values")
     return rows
+
+
+def _optional_float(value: float | None) -> float | None:
+    return None if value is None else float(value)
+
+
+def _whole_to_int(value: Any) -> Any:
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
 
 
 def _optional_vector_to_list(value: tuple[float, ...] | None) -> list[float] | None:
