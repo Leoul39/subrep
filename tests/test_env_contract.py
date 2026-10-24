@@ -28,7 +28,7 @@ def env_instance(request):
 def _get_sample_action(env):
     """Return a valid action for the given environment."""
     if isinstance(env, VillageEnv):
-        return "idle"
+        return "wait"
     return 0
 
 
@@ -154,7 +154,7 @@ def test_validate_env_metadata_rejects_invalid():
 def test_executor_works_on_village_env():
     """SkillExecutor runs full rollout on VillageEnv and outputs 6D motives."""
     env = VillageEnv(seed=1)
-    policy = lambda state: "idle"
+    policy = lambda state: "wait"
     executor = SkillExecutor(env=env, policy_fn=policy, max_steps=10)
     payoff, motives, terminated = executor.run_episode()
 

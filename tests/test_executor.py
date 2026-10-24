@@ -251,7 +251,7 @@ def test_executor_strict_mode_village_never_falls_back():
     """VillageEnv never triggers strict-mode fallback (always 5-tuple + task_payoff)."""
     from village_sim.env import VillageEnv
     env = VillageEnv(seed=1)
-    executor = SkillExecutor(env=env, policy_fn=lambda obs: "idle", strict=True, max_steps=5)
+    executor = SkillExecutor(env=env, policy_fn=lambda obs: "wait", strict=True, max_steps=5)
     with _warnings.catch_warnings():
         _warnings.simplefilter("error", RuntimeWarning)
         payoff, motives, _ = executor.run_episode()
