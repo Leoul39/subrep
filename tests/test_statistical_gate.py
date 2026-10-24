@@ -100,3 +100,25 @@ def test_invalid_inputs_are_rejected(delta_r, delta_n, message):
 def test_confidence_must_be_a_probability():
     with pytest.raises(ValueError, match="confidence"):
         gate_statistics([0.0, 0.0], [[0.0, 0.0], [0.0, 0.0]], confidence=1.0)
+
+
+def test_a_contextual_region_admits_what_the_full_simplex_rejects():
+    dn = [[0.3, 0.2, -0.3]] * 2
+    stats = gate_statistics([0.0, 0.0], dn)
+    assert stats.admitting_gate(0.1) is None
+    region = [0.6, 0.6, 0.1]
+    assert stats.lower_bound_over(region) == pytest.approx(0.1 * -0.3 + 0.6 * 0.2 + 0.3 * 0.3)
+    assert stats.admitting_gate(0.1, region) == "CDS"
+
+
+def test_the_full_simplex_region_matches_the_plain_bound():
+    rng = np.random.default_rng(4)
+    stats = gate_statistics(rng.normal(0, 0.1, 30), rng.normal(0, 0.1, (30, 4)))
+    assert stats.lower_bound_over([1.0, 1.0, 1.0, 1.0]) == pytest.approx(stats.lower_bound)
+    assert len(stats.coordinate_bounds) == 4 and min(stats.coordinate_bounds) == stats.lower_bound
+
+
+def test_an_infeasible_region_is_refused():
+    stats = gate_statistics([0.0, 0.0], [[0.1, 0.1], [0.1, 0.1]])
+    with pytest.raises(ValueError):
+        stats.lower_bound_over([0.3, 0.3])
