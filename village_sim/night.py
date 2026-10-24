@@ -100,6 +100,7 @@ class NightResult:
     decisions: list[Decision]
     final_state: VillageState
     certificates: list[Certificate] = field(default_factory=list)
+    evidence: list[dict] = field(default_factory=list)
 
     @property
     def task_status(self) -> str:
@@ -119,6 +120,7 @@ class NightResult:
             "final_phi": [float(v) for v in phi(self.final_state)],
             "decisions": [asdict(d) for d in self.decisions],
             "certificate_ids": [c.skill_id for c in self.certificates],
+            "evidence_pairs": len(self.evidence),
         }
 
 
@@ -189,23 +191,30 @@ class NightRunner:
         weights: np.ndarray,
         label: str,
         created: str,
-    ) -> tuple[list[Assessment], list[Certificate]]:
-        """Gate every startable option at ``state``; certify the admitted ones."""
+    ) -> tuple[list[Assessment], list[Certificate], list[dict]]:
+        """Gate every startable option at ``state``; certify the admitted ones.
+
+        Returns the assessments, the certificates of the admitted options, and
+        every paired rollout behind them, tagged with the certificate skill id.
+        """
         schema = VILLAGE_SYNTHETIC_OBJECTIVE_SCHEMA
         horizon = steps_to_sunrise(state, self.model.mission)
         assessments: list[Assessment] = []
         certificates: list[Certificate] = []
+        evidence: list[dict] = []
         for option in self.options:
             if not option.can_start(state, self.model.mission):
                 continue
+            skill_id = f"{option.option_id}@{label}"
             pairs = evaluate_option(self.model, option, state, self.model_seeds, self.gamma)
+            evidence.extend({"skill_id": skill_id, "context_id": label, **pair.to_dict()} for pair in pairs)
             stats = gate_statistics([p.delta_r for p in pairs], [p.delta_n for p in pairs], self.confidence)
             gate = stats.admitting_gate(self.epsilon)
             score = float(stats.mean_delta_r + np.dot(weights, stats.mean_delta_n))
             if gate is not None:
                 epsilon = self.epsilon if gate == "PDS" else 0.0
                 certificates.append(Certificate(
-                    skill_id=f"{option.option_id}@{label}",
+                    skill_id=skill_id,
                     gate_type=gate,
                     delta_r=stats.mean_delta_r,
                     delta_n=stats.mean_delta_n,
@@ -227,7 +236,7 @@ class NightRunner:
                     confidence_level=stats.confidence,
                     lower_bound=stats.lower_bound,
                     return_scale=return_scale(self.gamma, horizon),
-                    evidence_ref=f"model-rollouts#{label}",
+                    evidence_ref=f"decision-evidence#{label}",
                 ))
             assessments.append(Assessment(
                 option_id=option.option_id,
@@ -238,7 +247,7 @@ class NightRunner:
                 mean_option_steps=float(np.mean([p.candidate.option_steps for p in pairs])),
                 score=score,
             ))
-        return assessments, certificates
+        return assessments, certificates, evidence
 
     def select(self, certificates: list[Certificate], weights: np.ndarray) -> tuple[str | None, float | None]:
         """The admitted option with the highest score, through the skill library."""
@@ -269,6 +278,7 @@ class NightRunner:
         created = datetime.now(timezone.utc).isoformat(timespec="seconds")
         decisions: list[Decision] = []
         audit: list[Certificate] = []
+        evidence: list[dict] = []
         lookup = {option.option_id: option for option in self.options}
 
         mission = self.model.mission
@@ -277,8 +287,9 @@ class NightRunner:
                 break
             label = f"night-{seed}-tick-{state.world_tick}"
             weights = self.weight_fn(state)
-            assessments, certificates = self.assess(state, weights, label, created)
+            assessments, certificates, pairs = self.assess(state, weights, label, created)
             audit.extend(certificates)
+            evidence.extend(pairs)
             if self.gated:
                 chosen_id, score = self.select(certificates, weights)
             else:
@@ -328,4 +339,4 @@ class NightRunner:
                 phi_after=tuple(float(v) for v in phi(state)),
             ))
 
-        return NightResult(seed=seed, decisions=decisions, final_state=state, certificates=audit)
+        return NightResult(seed=seed, decisions=decisions, final_state=state, certificates=audit, evidence=evidence)
