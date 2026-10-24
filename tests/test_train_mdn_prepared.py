@@ -62,3 +62,18 @@ def test_build_auxiliary_records_from_prepared_candidate_outcomes_includes_all_c
     )
 
     assert len(records) == len(_prepared_outcomes())
+
+
+def test_build_records_takes_the_objective_count_from_the_outcomes():
+    outcomes = (
+        PreparedCandidateOutcome(context=(0.1,) * 5, skill_id="a", payoff=1.0, motives=(0.8, 0.4, 0.1)),
+        PreparedCandidateOutcome(context=(0.1,) * 5, skill_id="b", payoff=0.5, motives=(0.3, 0.7, 0.2)),
+    )
+    records = build_records_from_prepared_candidate_outcomes(
+        prepared_outcomes=outcomes,
+        baseline_stats={"baseline_payoff": 0.2, "baseline_motives": (0.1, 0.1, 0.1)},
+        seed=0,
+        device="cpu",
+    )
+    assert len(records) == 1
+    assert len(records[0].alpha) == 3 and len(records[0].weights_used) == 3
