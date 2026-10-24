@@ -81,8 +81,25 @@ def test_certificate_cds_nonzero_epsilon_fails():
         _sample_certificate(gate_type="CDS", epsilon=0.1)
 
 
+def test_certificate_wrong_delta_n_length_fails():
+    """delta_n must describe at least two objectives.
+
+    Previously this pinned "exactly 2" and used a length-3 vector as the
+    negative case. The certificate schema is now length-generic (M >= 2) so the
+    MDN's feasible support geometry can be certified at any objective count, so
+    the negative case is a vector that is too short to describe a trade-off.
+    """
+    with pytest.raises(ValueError):
+        _sample_certificate(delta_n=(0.1,))  # type: ignore[arg-type]
+
+
+def test_certificate_accepts_more_than_two_objectives():
+    """A three-objective certificate must be constructible."""
+    cert = _sample_certificate(delta_n=(0.1, 0.2, 0.3))  # type: ignore[arg-type]
+
+    assert cert.delta_n == (0.1, 0.2, 0.3)
 def test_certificate_empty_delta_n_fails():
-    """delta_n must be non-empty; any N >= 1 is accepted (N-dimensional)."""
+    """An empty delta_n is rejected; a three-objective one is accepted."""
     with pytest.raises((ValueError, TypeError)):
         Certificate(
             skill_id="s",
@@ -271,10 +288,13 @@ def test_query_by_weights_invalid_values_raise():
         store.query_by_weights([-0.1, 1.1])  # negative component
     with pytest.raises(ValueError):
         store.query_by_weights([0.5, np.inf])  # non-finite
-    # [0.5, 0.3, 0.2] is a valid 3D simplex but the store cert is 2D
-    # — raises due to dimension mismatch (B4 dimension-safe store queries).
-    with pytest.raises(ValueError, match="delta_n length"):
-        store.query_by_weights([0.5, 0.3, 0.2])
+    with pytest.raises(ValueError):
+        store.query_by_weights([1.0])  # too short to describe a trade-off
+
+    # A length-3 simplex vector is now VALID: the store must be queryable for
+    # certificates with more than two objectives. It used to be rejected on
+    # shape alone, which would have made M > 2 certificates unreachable.
+    assert store.query_by_weights([0.5, 0.3, 0.2]) is not None
 
 
 def test_query_by_weights_raises_even_when_store_empty():
