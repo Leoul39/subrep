@@ -502,6 +502,12 @@ def test_the_protected_wait_retreats_and_eats_but_never_spends():
     assert (s.emeralds, s.coal, s.charcoal, s.torches) == (20, 4, 2, 4)
 
 
+def test_trade_hotkeys_are_offered_only_while_books_are_still_needed():
+    assert TRADE_MENU_HOTKEYS.can_start(dusk_state(), MISSION)
+    assert not TRADE_MENU_HOTKEYS.can_start(_dusk(books=3), MISSION)
+    assert not TRADE_MENU_HOTKEYS.can_start(_dusk(fast_trading=True), MISSION)
+
+
 def test_an_option_cannot_start_outside_its_initiation_set():
     with pytest.raises(ValueError, match="cannot start"):
         ARCHER_KITE.new_run(dusk_state(), MISSION)

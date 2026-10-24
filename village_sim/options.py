@@ -240,7 +240,7 @@ ARCHER_KITE = VillageOption(
 )
 TRADE_MENU_HOTKEYS = VillageOption(
     "trade_menu_hotkeys_v1", "1.0", "threat", 1,
-    lambda s, m: not s.fast_trading,
+    lambda s, m: not s.fast_trading and s.books_still_needed(m) > 0,
     _TradeMenuHotkeys,
 )
 SAFE_SPRINT_PATH_FOLLOW = VillageOption(
