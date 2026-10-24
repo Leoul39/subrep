@@ -445,3 +445,20 @@ def test_evidenced_certificates_persist_in_the_store(tmp_path):
     reloaded = CertificateStore()
     reloaded.load_from_file(path)
     assert reloaded.get_certificate("torch_corridor_v1@dusk") == _evidenced_certificate()
+
+
+def test_the_store_holds_many_six_objective_certificates(tmp_path):
+    store = CertificateStore()
+    for i in range(80):
+        assert store.add(_evidenced_certificate(skill_id=f"option_{i}@dusk"))
+    for i in range(0, 80, 4):
+        assert store.remove_skill(f"option_{i}@dusk")
+    path = tmp_path / "many.metta"
+    store.save_to_file(path)
+
+    reloaded = CertificateStore()
+    reloaded.load_from_file(path)
+    assert {c.skill_id: c for c in reloaded.load_all()} == {c.skill_id: c for c in store.load_all()}
+
+    rescanned = CertificateStore(space=reloaded._space)
+    assert rescanned.count() == 60

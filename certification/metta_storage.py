@@ -15,6 +15,17 @@ from certification.metta_bridge import atom_to_cert, cert_to_atom, parse_atom, s
 from utils.cone_utils import validate_simplex_weights
 
 
+def _space_atom(certificate: Certificate) -> Any:
+    """The certificate as an atom built by the MeTTa parser.
+
+    Parsed atoms hold numbers and strings as Hyperon's own grounded values.
+    Atoms built from Python-wrapped values cannot be reliably removed from a
+    space, and spaces holding a few dozen of them crash on scan (observed with
+    hyperon 0.2.10).
+    """
+    return parse_atom(serialize_atom(cert_to_atom(certificate)))
+
+
 class CertificateStore:
     """Manage admitted skill certificates in a Hyperon space."""
 
@@ -23,12 +34,14 @@ class CertificateStore:
         self._metta = MeTTa()
         # Default to this runner's program space unless caller injects one.
         self._space = space if space is not None else self._metta.space()
-        # Keep a Python-side index for stable runtime access. Hyperon remains
-        # the backing audit space, but some Hyperon builds can be fragile when
-        # repeatedly scanning atoms through get_atoms().
+        # The Python index is the source of truth for adds, lookups and
+        # removals; Hyperon remains the backing audit space. The space is
+        # scanned only when a caller injects an existing one, on load, and on
+        # an explicit resync().
         self._certificates: dict[str, Certificate] = {}
         self._atoms_by_skill: dict[str, Any] = {}
-        self.resync()
+        if space is not None:
+            self.resync()
 
     def resync(self) -> None:
         """Refresh Python indices from the Hyperon backing space."""
@@ -53,10 +66,7 @@ class CertificateStore:
         # Skill IDs are treated as unique store keys.
         if self.contains(certificate.skill_id):
             return False
-        if self._find_certificate_atom(certificate.skill_id) is not None:
-            self.resync()
-            return False
-        atom = cert_to_atom(certificate)
+        atom = _space_atom(certificate)
         self._space.add_atom(atom)
         self._certificates[certificate.skill_id] = certificate
         self._atoms_by_skill[certificate.skill_id] = atom
@@ -114,7 +124,6 @@ class CertificateStore:
                 return False
         self._certificates.pop(skill_id, None)
         self._space.remove_atom(atom)
-        self.resync()
         return True
 
     def load_all(self) -> list[Certificate]:
@@ -161,17 +170,17 @@ class CertificateStore:
             parsed_certs.append(cert)
 
         # Replace semantics: remove all current certificate atoms from the
-        # backing space, including any atoms not tracked by Python indices.
+        # backing space, including any atoms not tracked by Python indices,
+        # then index exactly what the file holds.
         for atom in self._certificate_atoms():
             self._space.remove_atom(atom)
         self._certificates.clear()
         self._atoms_by_skill.clear()
         for cert in parsed_certs:
-            atom = cert_to_atom(cert)
+            atom = _space_atom(cert)
             self._space.add_atom(atom)
             self._certificates[cert.skill_id] = cert
             self._atoms_by_skill[cert.skill_id] = atom
-        self.resync()
 
     def _certificate_atoms(self) -> list[Any]:
         return [atom for atom in self._space.get_atoms() if self._is_certificate_atom(atom)]

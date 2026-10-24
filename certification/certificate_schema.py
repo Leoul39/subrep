@@ -274,11 +274,13 @@ class Certificate:
             data["motive_names"] = None
         for field in _EVIDENCE_FIELDS:
             data.setdefault(field, None)
-        # MeTTa stores numbers in vectors as floats; restore whole numbers to int
-        # and leave anything else for the constructor to reject.
+        # MeTTa vectors, and some Hyperon versions, return integers as floats;
+        # restore whole numbers to int and leave anything else for the
+        # constructor to reject.
         if data["rollout_seeds"] is not None:
             data["rollout_seeds"] = tuple(_whole_to_int(s) for s in data["rollout_seeds"])
-        data["n_rollouts"] = _whole_to_int(data["n_rollouts"])
+        for field in ("seed", "episode_length", "n_rollouts"):
+            data[field] = _whole_to_int(data.get(field))
         return cls(**data)
 
     @staticmethod
