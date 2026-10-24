@@ -20,7 +20,6 @@ class CandidateSkillRecord:
 
     skill_id: str
     delta_r: float
-    # delta_n is an N-dimensional motive improvement vector (N >= 1).
     delta_n: tuple[float, ...]
     is_certified: bool
     gate_type: str
@@ -51,8 +50,8 @@ class CandidateSkillRecord:
         object.__setattr__(self, "delta_r", delta_r)
 
         delta_n = tuple(float(v) for v in self.delta_n)
-        if len(delta_n) == 0:
-            raise ValueError("delta_n must be non-empty")
+        if len(delta_n) < 2:
+            raise ValueError(f"delta_n must have length >= 2, got {len(delta_n)}")
         if not all(isfinite(v) for v in delta_n):
             raise ValueError(f"delta_n must contain only finite values, got {delta_n}")
         object.__setattr__(self, "delta_n", delta_n)
@@ -108,10 +107,9 @@ class MDNDecisionRecord:
     selected_score: float | None = None
     behavior_probability: float | None = None
     actual_payoff: float | None = None
-    # actual_motives is an N-dimensional observed motive vector (N >= 1).
     actual_motives: tuple[float, ...] | None = None
     utility: float | None = None
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
 
     def __post_init__(self) -> None:
         if not isinstance(self.schema_version, str) or not self.schema_version.strip():
@@ -129,8 +127,17 @@ class MDNDecisionRecord:
             raise ValueError("weights_used length must match alpha length")
         if any(value <= 0.0 for value in alpha):
             raise ValueError(f"alpha must be strictly positive, got {alpha}")
+        # Full W_x feasibility contract, not just non-negativity: an audit
+        # record must never store a geometrically empty admissible region.
         if any(value < 0.0 for value in support_values):
             raise ValueError(f"support_values must be non-negative, got {support_values}")
+        if any(value > 1.0 for value in support_values):
+            raise ValueError(f"support_values must satisfy s_i <= 1, got {support_values}")
+        if sum(support_values) < 1.0 - 1e-9:
+            raise ValueError(
+                f"support_values must satisfy sum(s) >= 1 (otherwise W_x is empty), "
+                f"got sum={sum(support_values):.6f} from {support_values}"
+            )
 
         weights_array = np.asarray(weights_used, dtype=float)
         if not validate_simplex_weights(weights_array):

@@ -8,6 +8,13 @@ The repo uses two generated data formats:
 Generated datasets are ignored by git and should be regenerated locally unless
 attached as an external artifact.
 
+> **Datasets collected before `fix/lunar-lander-fuel-reward-sign` are stale.**
+> The wrapper negated the engine-cost sum, inverting the `Fuel` motive. A positive
+> `motives[1]` on a rollout that fired an engine marks an old-mapping file; the
+> corrected value is always `<= 0`. Recollect before training an MDN, and retrain
+> `models/mdn_auxiliary_best.pth`. Safety-Gymnasium rollouts use a separate
+> adapter and are unaffected.
+
 ## Raw Rollout Records
 
 Default path:
@@ -34,7 +41,12 @@ Per-file schema:
 | `behavior_probability` | scalar/float, optional | Behavior-policy probability when available |
 
 These records train `models/generator.pt` through supervised payoff/motive
-regression.
+regression. `generator/train_generator.py` splits them into train (75%),
+validation (12.5%), and test (12.5%) sets by filename, persisting the
+assignment to `data/generator_split_manifest.json` so evaluation scripts
+read back the same split rather than recomputing it. See
+`docs/GENERATOR_TRAINING_PIPELINE.md` for the full training/evaluation
+sequence.
 
 ## Candidate-Set Records
 
@@ -51,18 +63,26 @@ multiple candidate outcomes from the same starting context.
 Collect training candidate sets:
 
 ```bash
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets --seed 42 --prefix seed42
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets --seed 43 --prefix seed43
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets --seed 44 --prefix seed44
+
+```bash
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets --seed 10000 --prefix seed10000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets --seed 11000 --prefix seed11000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets --seed 12000 --prefix seed12000
+```
 ```
 
 Collect held-out candidate sets:
 
-```bash
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 100 --prefix seed100
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 101 --prefix seed101
-python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 102 --prefix seed102
 ```
+```bash
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 3000 --prefix seed3000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 4000 --prefix seed4000
+python -m data_collector.collect_candidate_sets --contexts 1000 --save-dir data/mdn_candidate_sets_eval --seed 5000 --prefix seed5000
+```
+
+These produce context seeds 3001-6000, separated from SkillGenerator training
+seeds 42-2041. Use a fresh directory when replacing an older evaluation set.
+
 
 Per-file schema:
 
@@ -95,8 +115,8 @@ These files are run outputs. Regenerate them with:
 python -m demo.run_full_pipeline
 ```
 
-If `models/mdn_policy_best.pth` is present, the admission report records
-`mdn_source: trained_checkpoint`. Otherwise it records `mdn_source: stub`.
+If a SASP-compatible `models/mdn_policy_best.pth` is present, the admission report records
+`mdn_source: trained_checkpoint`. If it is missing or predates SASP, it records `mdn_source: stub`.
 
 ## Optional Safety-Gymnasium Rollout Records
 
