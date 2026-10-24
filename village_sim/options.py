@@ -6,7 +6,7 @@ behaviour over primitive actions (``OptionRun.act``), a termination condition
 (``OptionRun.done``) and a step limit, so its duration is random and depends
 on the state it starts from. ``PROTECTED_WAIT`` is the conservative baseline
 every candidate is compared against: it steps back into the hall from the
-perimeter and waits.
+perimeter, eats when hungry and otherwise waits.
 """
 
 from __future__ import annotations
@@ -61,7 +61,11 @@ def _buying_done(state: VillageState, mission: VillageMission) -> bool:
 
 class _ProtectedWait(OptionRun):
     def act(self, state):
-        return "move_hall" if state.location == "perimeter" else "wait"
+        if state.location == "perimeter":
+            return "move_hall"
+        if state.player_food <= 6.0 and state.food_items > 0:
+            return "eat"
+        return "wait"
 
     def done(self, state):
         return False

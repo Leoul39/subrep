@@ -449,6 +449,15 @@ def test_option_ids_are_unique_and_fit_the_evaluation_horizon():
     assert all(option.max_steps <= EVALUATION_HORIZON for option in CANDIDATE_OPTIONS)
 
 
+def test_the_protected_wait_retreats_and_eats_but_never_spends():
+    env = _env_at(_dusk(location="perimeter", player_food=5.0))
+    rollout = run_option(env, PROTECTED_WAIT, env.state.copy(), seed=0, gamma=GAMMA, horizon=3)
+    assert rollout.env_steps == 3
+    s = env.state
+    assert s.location == "hall" and s.food_items == 2
+    assert (s.emeralds, s.coal, s.charcoal, s.torches) == (20, 4, 2, 4)
+
+
 def test_an_option_cannot_start_outside_its_initiation_set():
     with pytest.raises(ValueError, match="cannot start"):
         ARCHER_KITE.new_run(dusk_state(), MISSION)
