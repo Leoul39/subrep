@@ -3,7 +3,9 @@ One village night as a chain of certified decisions.
 
 At each decision point the agent observes the world state x and:
 
-1. takes the motive weights for x's situation from a weight schedule;
+1. takes the motive weights for x from a weight source: the scenario schedule
+   (certified over the full simplex), or a trained MDN that also gives a
+   region of plausible weights W_x to certify over;
 2. evaluates every option that can start at x with paired rollouts in a
    separate simulator started from a copy of x, so the world itself is never
    used for testing;
@@ -29,36 +31,24 @@ from typing import Callable, Iterable
 import numpy as np
 
 from certification.certificate_schema import Certificate
-from certification.metta_storage import CertificateStore
+from certification.cvar_test import CVaRGate
 from certification.statistical_gate import gate_statistics
 from env.skill_executor import SkillExecutor
 from library.skill_library import SkillLibrary
 from schemas.minecraft_objective_schema import VILLAGE_SYNTHETIC_OBJECTIVE_SCHEMA
 from utils.mdn_contracts import CandidateSkillRecord
 from utils.mdn_selection import select_best_candidate
+from utils.support_geometry import make_basis_query_directions
 from village_sim.contexts import partition_of
 from village_sim.env import VillageEnv
 from village_sim.motives import phi
 from village_sim.options import CANDIDATE_OPTIONS, PROTECTED_WAIT, VillageOption
 from village_sim.rollouts import evaluate_option, return_scale, steps_to_sunrise
 from village_sim.state import VillageState
+from village_sim.weights import ScenarioWeights, WeightView
 
-# The reference scenario's weight schedule: moderate safety priority at dusk,
-# a bounded shift toward safety while threats are present, and a shift toward
-# trade once the village is calm again.
-SCENARIO_WEIGHTS = {
-    "dusk": (0.35, 0.15, 0.20, 0.20, 0.05, 0.05),
-    "night_attack": (0.38, 0.17, 0.18, 0.17, 0.05, 0.05),
-    "raid": (0.38, 0.17, 0.18, 0.17, 0.05, 0.05),
-    "night_calm": (0.25, 0.25, 0.20, 0.20, 0.05, 0.05),
-}
-
-WeightFn = Callable[[VillageState], np.ndarray]
-
-
-def scenario_weights(state: VillageState) -> np.ndarray:
-    """Weights of the reference scenario for the situation ``state`` is in."""
-    return np.asarray(SCENARIO_WEIGHTS[partition_of(state)], dtype=np.float64)
+WeightModel = Callable[[VillageState], WeightView]
+CVAR_LEVEL = 0.1
 
 
 @dataclass(frozen=True)
@@ -72,6 +62,7 @@ class Assessment:
     lower_bound: float
     mean_option_steps: float
     score: float
+    cvar: float | None = None
 
 
 @dataclass(frozen=True)
@@ -81,7 +72,9 @@ class Decision:
     index: int
     world_tick: int
     partition: str
+    weight_source: str
     weights: tuple[float, ...]
+    support_values: tuple[float, ...] | None
     assessments: tuple[Assessment, ...]
     chosen: str
     score: float | None
@@ -124,6 +117,20 @@ class NightResult:
         }
 
 
+def add_certified(library: SkillLibrary, cert: Certificate, policy: Callable) -> bool:
+    """Add ``cert`` to ``library`` with the weight region it was certified over."""
+    return library.add_skill(
+        cert.skill_id,
+        cert,
+        policy,
+        weight_region_type=cert.weight_region_type,
+        certification_context=cert.certification_context,
+        mdn_alpha=cert.mdn_alpha,
+        wx_support_directions=cert.wx_support_directions,
+        wx_support_values=cert.wx_support_values,
+    )
+
+
 def _best_assessed(assessments: list[Assessment]) -> tuple[str | None, float | None]:
     """Highest-scoring option among all assessed ones, certified or not."""
     if not assessments:
@@ -162,7 +169,7 @@ class NightRunner:
 
     def __init__(
         self,
-        weight_fn: WeightFn = scenario_weights,
+        weight_model: WeightModel | None = None,
         options: Iterable[VillageOption] = CANDIDATE_OPTIONS,
         model_seeds: int = 30,
         gamma: float = 0.99,
@@ -174,7 +181,7 @@ class NightRunner:
     ) -> None:
         if model_seeds < 2:
             raise ValueError("model_seeds must be at least 2 for a confidence bound")
-        self.weight_fn = weight_fn
+        self.weight_model = weight_model or ScenarioWeights()
         self.options = tuple(options)
         self.model_seeds = tuple(range(model_seeds))
         self.gamma = gamma
@@ -188,17 +195,25 @@ class NightRunner:
     def assess(
         self,
         state: VillageState,
-        weights: np.ndarray,
+        view: WeightView,
         label: str,
         created: str,
+        cvar_seed: int = 0,
     ) -> tuple[list[Assessment], list[Certificate], list[dict]]:
         """Gate every startable option at ``state``; certify the admitted ones.
+
+        Options are certified over ``view.support_values`` when the weight source
+        gives a region, otherwise over the full simplex. With Dirichlet
+        parameters available, each admitted option also gets a seeded CVaR of its
+        score under w ~ Dirichlet(alpha) for the audit.
 
         Returns the assessments, the certificates of the admitted options, and
         every paired rollout behind them, tagged with the certificate skill id.
         """
         schema = VILLAGE_SYNTHETIC_OBJECTIVE_SCHEMA
         horizon = steps_to_sunrise(state, self.model.mission)
+        region = view.support_values
+        basis = make_basis_query_directions(len(view.weights))
         assessments: list[Assessment] = []
         certificates: list[Certificate] = []
         evidence: list[dict] = []
@@ -209,16 +224,31 @@ class NightRunner:
             pairs = evaluate_option(self.model, option, state, self.model_seeds, self.gamma)
             evidence.extend({"skill_id": skill_id, "context_id": label, **pair.to_dict()} for pair in pairs)
             stats = gate_statistics([p.delta_r for p in pairs], [p.delta_n for p in pairs], self.confidence)
-            gate = stats.admitting_gate(self.epsilon)
-            score = float(stats.mean_delta_r + np.dot(weights, stats.mean_delta_n))
+            gate = stats.admitting_gate(self.epsilon, region)
+            bound = stats.lower_bound_over(region)
+            score = float(stats.mean_delta_r + np.dot(view.weights, stats.mean_delta_n))
+            cvar = None
             if gate is not None:
                 epsilon = self.epsilon if gate == "PDS" else 0.0
+                region_fields = {}
+                if region is not None:
+                    region_fields = {
+                        "weight_region_type": "MDN_WX",
+                        "certification_context": tuple(float(v) for v in view.context),
+                        "mdn_alpha": tuple(float(v) for v in view.alpha),
+                        "wx_support_directions": tuple(tuple(float(v) for v in row) for row in basis),
+                        "wx_support_values": tuple(float(v) for v in region),
+                    }
+                if view.alpha is not None:
+                    cvar = CVaRGate(confidence=CVAR_LEVEL, seed=cvar_seed).get_cvar(
+                        stats.mean_delta_r, np.asarray(stats.mean_delta_n), view.alpha
+                    )
                 certificates.append(Certificate(
                     skill_id=skill_id,
                     gate_type=gate,
                     delta_r=stats.mean_delta_r,
                     delta_n=stats.mean_delta_n,
-                    admission_margin=stats.lower_bound + epsilon,
+                    admission_margin=bound + epsilon,
                     epsilon=epsilon,
                     timestamp=created,
                     seed=self.model_seeds[0],
@@ -234,28 +264,37 @@ class NightRunner:
                     n_rollouts=stats.n,
                     rollout_seeds=self.model_seeds,
                     confidence_level=stats.confidence,
-                    lower_bound=stats.lower_bound,
+                    lower_bound=bound,
                     return_scale=return_scale(self.gamma, horizon),
                     evidence_ref=f"decision-evidence#{label}",
+                    **region_fields,
                 ))
             assessments.append(Assessment(
                 option_id=option.option_id,
                 gate=gate,
                 mean_delta_r=stats.mean_delta_r,
                 mean_delta_n=stats.mean_delta_n,
-                lower_bound=stats.lower_bound,
+                lower_bound=bound,
                 mean_option_steps=float(np.mean([p.candidate.option_steps for p in pairs])),
                 score=score,
+                cvar=cvar,
             ))
         return assessments, certificates, evidence
 
-    def select(self, certificates: list[Certificate], weights: np.ndarray) -> tuple[str | None, float | None]:
+    def select(self, certificates: list[Certificate], view: WeightView) -> tuple[str | None, float | None]:
         """The admitted option with the highest score, through the skill library."""
         lookup = {option.option_id: option for option in self.options}
         library = SkillLibrary(schema=VILLAGE_SYNTHETIC_OBJECTIVE_SCHEMA)
         for cert in certificates:
-            library.add_skill(cert.skill_id, cert, policy=lookup[cert.skill_id.split("@")[0]].new_run)
-        admissible = library.query_admissible(weights, schema=VILLAGE_SYNTHETIC_OBJECTIVE_SCHEMA)
+            if not add_certified(library, cert, lookup[cert.skill_id.split("@")[0]].new_run):
+                raise RuntimeError(f"the skill library refused certificate {cert.skill_id!r} that the gate admitted")
+        region = view.support_values
+        admissible = library.query_admissible(
+            view.weights,
+            support_directions=None if region is None else make_basis_query_directions(len(view.weights)),
+            support_values=region,
+            schema=VILLAGE_SYNTHETIC_OBJECTIVE_SCHEMA,
+        )
         if not admissible:
             return None, None
         records = [
@@ -268,7 +307,7 @@ class NightRunner:
             )
             for entry in admissible
         ]
-        skill_id, score = select_best_candidate(records, weights)
+        skill_id, score = select_best_candidate(records, view.weights)
         return skill_id.split("@")[0], score
 
     def run(self, seed: int, start: VillageState | None = None) -> NightResult:
@@ -286,12 +325,12 @@ class NightRunner:
             if state.night_over(mission):
                 break
             label = f"night-{seed}-tick-{state.world_tick}"
-            weights = self.weight_fn(state)
-            assessments, certificates, pairs = self.assess(state, weights, label, created)
+            view = self.weight_model(state)
+            assessments, certificates, pairs = self.assess(state, view, label, created, cvar_seed=index)
             audit.extend(certificates)
             evidence.extend(pairs)
             if self.gated:
-                chosen_id, score = self.select(certificates, weights)
+                chosen_id, score = self.select(certificates, view)
             else:
                 chosen_id, score = _best_assessed(assessments)
             situation = partition_of(state)
@@ -328,7 +367,9 @@ class NightRunner:
                 index=index,
                 world_tick=before.world_tick,
                 partition=situation,
-                weights=tuple(float(w) for w in weights),
+                weight_source=view.source,
+                weights=tuple(float(w) for w in view.weights),
+                support_values=None if view.support_values is None else tuple(float(v) for v in view.support_values),
                 assessments=tuple(assessments),
                 chosen=chosen_id,
                 score=score,

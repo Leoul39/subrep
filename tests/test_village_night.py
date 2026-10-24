@@ -10,7 +10,8 @@ import pytest
 pytest.importorskip("hyperon")
 
 from village_sim.contexts import partition_of
-from village_sim.night import SCENARIO_WEIGHTS, NightRunner, scenario_weights
+from village_sim.night import NightRunner
+from village_sim.weights import SCENARIO_WEIGHTS, scenario_weights
 from village_sim.options import PROTECTED_WAIT
 from village_sim.mission import VillageMission
 from village_sim.state import dusk_state
@@ -140,8 +141,9 @@ def test_every_night_runs_to_sunrise_unless_the_player_dies(raid_night):
 def test_the_night_report_compares_policies_at_sunrise(tmp_path):
     from demo.run_village_night import POLICIES, SCENARIOS, run_comparison
 
-    out = run_comparison(nights=1, report_dir=tmp_path, model_seeds=3, verbose=False)
+    out = run_comparison(nights=1, report_dir=tmp_path, model_seeds=3, mdn_checkpoint=None, verbose=False)
     report = out["report"]
+    assert report["mdn_fallback"]
     assert set(report["scenarios"]) == set(SCENARIOS)
     for scenario in SCENARIOS:
         assert set(report["scenarios"][scenario]) == set(POLICIES)
@@ -149,3 +151,15 @@ def test_the_night_report_compares_policies_at_sunrise(tmp_path):
         for name in ("night_{}.json", "night_{}_certificates.metta", "night_{}_evidence.jsonl"):
             assert (tmp_path / name.format(scenario)).stat().st_size > 0
     assert "First SubRep night" in out["report_md"].read_text(encoding="utf-8")
+
+
+def test_training_the_village_mdn_saves_a_checkpoint_and_manifest(tmp_path):
+    from demo.train_village_mdn import train
+    from village_sim.weights import MDNWeights
+
+    out = train(tmp_path / "village_mdn.pth", epochs=50, verbose=False)
+    assert MDNWeights.load(out["checkpoint"])
+    manifest = json.loads(out["manifest_path"].read_text(encoding="utf-8"))
+    assert manifest["held_out"]["feasible_region_rate"] == 1.0
+    assert set(manifest["thresholds"]) == {"max_mean_weight_error", "max_weight_error"}
+    assert isinstance(manifest["passed"], bool)

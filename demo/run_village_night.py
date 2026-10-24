@@ -6,9 +6,12 @@ Scenarios:
     raid_at_dusk  the same start with a raid already under way
 
 Policies:
-    subrep    certified, weight-driven selection at every decision
-    ungated   the same scores with certification ignored
-    wait      the protected-wait baseline only
+    subrep       certified selection with the scenario weight schedule
+    subrep_mdn   certified selection with MDN weights over the MDN's weight
+                 region (falls back to the schedule, and says so, when the
+                 checkpoint is missing or incompatible)
+    ungated      the schedule's scores with certification ignored
+    wait         the protected-wait baseline only
 
 Every night runs to sunrise, so outcomes are compared at the same moment. For
 each scenario and policy the report gives the delivery rate, casualties, raid
@@ -17,7 +20,7 @@ scenario it also writes the decision timeline, the runtime certificates and the
 paired rollouts behind them.
 
 Usage:
-    python -m demo.run_village_night [--nights N] [--model-seeds K]
+    python -m demo.run_village_night [--nights N] [--model-seeds K] [--mdn-checkpoint PATH]
 """
 
 from __future__ import annotations
@@ -34,8 +37,10 @@ from village_sim.motives import MOTIVE_NAMES, phi
 from village_sim.night import NightResult, NightRunner
 from village_sim.options import PROTECTED_WAIT
 from village_sim.state import TASK_DELIVERED, VillageState, dusk_state
+from village_sim.weights import load_weight_model
 
 DEFAULT_REPORT_DIR = Path("demo/artifacts/village")
+DEFAULT_MDN_CHECKPOINT = Path("models/village_mdn.pth")
 
 
 def _raid_at_dusk() -> VillageState:
@@ -47,7 +52,7 @@ def _raid_at_dusk() -> VillageState:
 
 
 SCENARIOS = {"calm_dusk": dusk_state, "raid_at_dusk": _raid_at_dusk}
-POLICIES = {"subrep": {"gated": True}, "ungated": {"gated": False}, "wait": {"options": ()}}
+POLICIES = ("subrep", "subrep_mdn", "ungated", "wait")
 
 
 def _summarise(results: list[NightResult]) -> dict:
@@ -94,15 +99,31 @@ def run_comparison(
     report_dir: Path | None = None,
     *,
     model_seeds: int = 30,
+    mdn_checkpoint: Path | None = DEFAULT_MDN_CHECKPOINT,
     verbose: bool = True,
 ) -> dict:
     """Run every scenario under every policy and write the night report."""
     report_dir = Path(report_dir or DEFAULT_REPORT_DIR)
     report_dir.mkdir(parents=True, exist_ok=True)
-    report: dict = {"nights_per_cell": nights, "model_seeds": model_seeds, "scenarios": {}}
+    mdn_weights, mdn_fallback = load_weight_model(mdn_checkpoint)
+    runners = {
+        "subrep": dict(gated=True),
+        "subrep_mdn": dict(gated=True, weight_model=mdn_weights),
+        "ungated": dict(gated=False),
+        "wait": dict(options=()),
+    }
+    report: dict = {
+        "nights_per_cell": nights,
+        "model_seeds": model_seeds,
+        "mdn_checkpoint": None if mdn_checkpoint is None else str(mdn_checkpoint),
+        "mdn_fallback": mdn_fallback,
+        "scenarios": {},
+    }
     markdown = ["# Village night report", "",
                 f"{nights} nights per scenario and policy; {model_seeds} paired rollouts per option "
                 "at each decision; every night runs to sunrise.", ""]
+    if mdn_fallback:
+        markdown += [f"**subrep_mdn fell back to the scenario schedule:** {mdn_fallback}", ""]
 
     for scenario, make_start in SCENARIOS.items():
         markdown += [f"## Scenario: {scenario}", "",
@@ -111,8 +132,8 @@ def run_comparison(
                      "|---|---|---|---|---|" + "---|" * len(MOTIVE_NAMES)]
         report["scenarios"][scenario] = {}
         first_subrep: NightResult | None = None
-        for policy, kwargs in POLICIES.items():
-            runner = NightRunner(model_seeds=model_seeds, **kwargs)
+        for policy in POLICIES:
+            runner = NightRunner(model_seeds=model_seeds, **runners[policy])
             results = [runner.run(seed, start=make_start()) for seed in range(nights)]
             summary = _summarise(results)
             report["scenarios"][scenario][policy] = summary
@@ -145,5 +166,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--nights", type=int, default=10)
     parser.add_argument("--model-seeds", type=int, default=30)
+    parser.add_argument("--mdn-checkpoint", type=Path, default=DEFAULT_MDN_CHECKPOINT)
     args = parser.parse_args()
-    run_comparison(nights=args.nights, model_seeds=args.model_seeds)
+    run_comparison(nights=args.nights, model_seeds=args.model_seeds, mdn_checkpoint=args.mdn_checkpoint)
