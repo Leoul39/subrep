@@ -419,4 +419,4 @@ def test_registry_invalid_register_raises():
     with pytest.raises(ValueError, match="non-empty string"):
         reg.register("", lambda: None)
     with pytest.raises(ValueError, match="callable"):
-        reg.register("x", "not_a_callable")
+        reg.register("x", "not_a_callable")
