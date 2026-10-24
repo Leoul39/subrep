@@ -420,3 +420,76 @@ def test_registry_invalid_register_raises():
         reg.register("", lambda: None)
     with pytest.raises(ValueError, match="callable"):
         reg.register("x", "not_a_callable")
+
+# --- Stop conditions, reset forwarding and quiet runs ---
+
+class _CountingEnv:
+    """Ten-step env that records the arguments of every reset() call."""
+    def __init__(self):
+        self._step = 0
+        self.reset_calls = []
+    def reset(self, seed=None, options=None):
+        self.reset_calls.append({"seed": seed, "options": options})
+        self._step = 0
+        return np.array([0.0], dtype=np.float32), {}
+    def step(self, action):
+        self._step += 1
+        obs = np.array([float(self._step)], dtype=np.float32)
+        reward = np.array([1.0, 1.0], dtype=np.float32)
+        return obs, reward, self._step >= 10, False, {"task_payoff": 1.0}
+    def close(self): pass
+
+
+class _NoArgResetEnv(_CountingEnv):
+    """Env whose reset() accepts no arguments at all."""
+    def reset(self):
+        self._step = 0
+        return np.array([0.0], dtype=np.float32), {}
+
+
+def test_stop_fn_ends_rollout_after_the_step_that_satisfies_it():
+    env = _CountingEnv()
+    executor = SkillExecutor(
+        env=env, policy_fn=lambda obs: 0, gamma=1.0,
+        stop_fn=lambda obs, info: obs[0] >= 3, verbose=False,
+    )
+    result = executor.run_episode()
+    assert result.steps == 3
+    assert result.stop_reason == "stop_fn"
+    assert result.terminated is False
+    assert result.total_payoff == 3.0
+
+
+def test_env_termination_takes_precedence_over_stop_fn():
+    env = _CountingEnv()
+    executor = SkillExecutor(
+        env=env, policy_fn=lambda obs: 0, stop_fn=lambda obs, info: obs[0] >= 10, verbose=False,
+    )
+    result = executor.run_episode()
+    assert result.steps == 10
+    assert result.stop_reason == "terminated"
+
+
+def test_seed_and_options_are_forwarded_to_reset():
+    env = _CountingEnv()
+    executor = SkillExecutor(env=env, policy_fn=lambda obs: 0, max_steps=1, verbose=False)
+    executor.run_episode(seed=7, options={"state": "saved"})
+    assert env.reset_calls == [{"seed": 7, "options": {"state": "saved"}}]
+
+
+def test_reset_is_called_without_arguments_when_none_are_given():
+    env = _NoArgResetEnv()
+    executor = SkillExecutor(env=env, policy_fn=lambda obs: 0, max_steps=2, verbose=False)
+    assert executor.run_episode().steps == 2
+
+
+def test_seed_with_initial_obs_is_rejected():
+    executor = SkillExecutor(env=_CountingEnv(), policy_fn=lambda obs: 0, verbose=False)
+    with pytest.raises(ValueError, match="only when the executor resets"):
+        executor.run_episode(initial_obs=np.zeros(1), seed=3)
+
+
+def test_verbose_false_prints_nothing(capsys):
+    executor = SkillExecutor(env=_CountingEnv(), policy_fn=lambda obs: 0, max_steps=2, verbose=False)
+    executor.run_episode()
+    assert capsys.readouterr().out == ""
