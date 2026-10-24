@@ -27,7 +27,7 @@ from village_sim.options import (
     TORCH_CORRIDOR,
     TRADE_MENU_HOTKEYS,
 )
-from village_sim.rollouts import EVALUATION_HORIZON, evaluate_option, paired_rollout, return_scale, run_option
+from village_sim.rollouts import evaluate_option, paired_rollout, return_scale, run_option, steps_to_sunrise
 from village_sim.state import (
     RAID_LOST,
     RAID_WON,
@@ -140,6 +140,13 @@ def test_safety_falls_with_casualties_hostiles_and_raids():
     assert phi(_night_state(villager_health=(0.0, 20.0, 20.0, 20.0)))[SAFETY] < base
     assert phi(_night_state(hostiles=4))[SAFETY] < base
     assert phi(_night_state(raid_active=True, raiders=3, raid_waves_left=3))[SAFETY] < base
+
+
+def test_a_casualty_scales_safety_down_by_the_share_of_villagers_lost():
+    healthy = phi(_night_state())[SAFETY]
+    one_dead = phi(_night_state(villager_health=(0.0, 20.0, 20.0, 20.0)))[SAFETY]
+    assert one_dead == pytest.approx(0.75 * healthy, rel=1e-5)
+    assert phi(_night_state(villager_health=(0.0,) * 4))[SAFETY] == 0.0
 
 
 def test_shelter_rises_with_light_walls_and_golems():
@@ -398,8 +405,8 @@ def _raid_state(**changes) -> VillageState:
 
 
 def test_clearing_every_raid_wave_wins_hero_of_the_village():
-    env = _env_at(_raid_state(), seed=2)
-    for _ in range(40):
+    env = _env_at(_raid_state(wall_fraction=1.0), seed=2)
+    for _ in range(100):
         if not env.state.raid_active:
             break
         env.step("shoot" if env.state.threats else "wait")
@@ -418,14 +425,51 @@ def test_losing_a_raid_invalidates_the_contract():
     assert env.state.task_status == TASK_FAILED and info["task_payoff"] == -1.0
 
 
-def test_delivering_the_contract_pays_once_and_ends_the_night():
-    state = _dusk(location="settlement", books=3)
-    env = _env_at(state)
+def test_delivering_pays_once_and_the_night_goes_on_until_sunrise():
+    env = _env_at(_dusk(location="settlement", books=3, world_tick=MISSION.sunrise_tick - 300))
     _, _, terminated, _, info = env.step("deliver")
-    assert terminated and info["task_payoff"] == 1.0
+    assert not terminated and info["task_payoff"] == 1.0
+    assert env.state.task_status == TASK_DELIVERED
+    _, _, terminated, _, info = env.step("wait")
+    assert not terminated and info["task_payoff"] == 0.0
+    _, _, terminated, _, info = env.step("wait")
+    assert terminated and info["task_payoff"] == 0.0
     assert env.state.task_status == TASK_DELIVERED
     with pytest.raises(ValueError, match="over"):
         env.step("wait")
+
+
+def test_a_raid_lost_after_delivery_leaves_the_contract_delivered():
+    state = _raid_state(raiders=6, villager_health=(1.0, 1.0, 1.0, 1.0), wall_fraction=0.0)
+    state.task_status, state.books_delivered, state.location = TASK_DELIVERED, 3, "settlement"
+    env = _env_at(state, seed=0)
+    for _ in range(20):
+        _, _, terminated, _, info = env.step("wait")
+        assert info["task_payoff"] == 0.0
+        if env.state.raid_outcome == RAID_LOST:
+            break
+    assert env.state.raid_outcome == RAID_LOST
+    assert env.state.contract_valid and env.state.task_status == TASK_DELIVERED
+
+
+def test_sheltered_villagers_are_safe_from_hostile_mobs_but_not_from_raiders():
+    swarm = _night_state(hostiles=30, lit_fraction=0.0, wall_fraction=0.0)
+    env = _env_at(swarm, seed=1)
+    for _ in range(10):
+        env.step("wait")
+    assert env.state.villager_health == swarm.villager_health
+
+    exposed = VillageEnv(params=VillageModelParams(villagers_shelter_from_hostiles=False))
+    exposed.reset(seed=1, options={"state": swarm})
+    for _ in range(10):
+        exposed.step("wait")
+    assert sum(exposed.state.villager_health) < sum(swarm.villager_health)
+
+    raided = _env_at(_raid_state(raiders=6, wall_fraction=0.0), seed=1)
+    for _ in range(10):
+        if raided.step("wait")[2]:
+            break
+    assert sum(raided.state.villager_health) < sum(swarm.villager_health)
 
 
 def test_sunrise_without_delivery_fails_the_contract():
@@ -443,10 +487,10 @@ def test_player_death_fails_the_contract():
 
 # ── Options ─────────────────────────────────────────────────────────────────
 
-def test_option_ids_are_unique_and_fit_the_evaluation_horizon():
+def test_option_ids_are_unique_and_the_baseline_is_named():
     assert len(OPTIONS) == len(CANDIDATE_OPTIONS) + 1
     assert PROTECTED_WAIT.group == "baseline"
-    assert all(option.max_steps <= EVALUATION_HORIZON for option in CANDIDATE_OPTIONS)
+    assert all(option.max_steps > 0 for option in CANDIDATE_OPTIONS)
 
 
 def test_the_protected_wait_retreats_and_eats_but_never_spends():
@@ -479,7 +523,7 @@ def test_every_startable_option_runs_to_completion_from_sampled_states(seed):
         if option.can_start(start, MISSION):
             rollout = run_option(env, option, start, seed, GAMMA)
             assert 1 <= rollout.option_steps <= option.max_steps
-            assert rollout.env_steps <= EVALUATION_HORIZON
+            assert rollout.env_steps <= steps_to_sunrise(start, MISSION)
 
 
 def test_torch_corridor_places_four_torches_at_the_perimeter():
@@ -514,7 +558,7 @@ def test_archer_kite_stops_when_the_threats_are_gone():
 
 def test_return_scale_is_the_inverse_discounted_horizon():
     assert return_scale(1.0, 4) == 0.25
-    assert return_scale(GAMMA) == pytest.approx(1.0 / sum(GAMMA ** t for t in range(EVALUATION_HORIZON)))
+    assert return_scale(GAMMA, 12) == pytest.approx(1.0 / sum(GAMMA ** t for t in range(12)))
     with pytest.raises(ValueError):
         return_scale(GAMMA, 0)
 
@@ -538,9 +582,18 @@ def test_the_baseline_against_itself_has_zero_deltas():
 
 def test_a_rollout_that_ends_early_keeps_its_final_state_for_the_horizon():
     env = VillageEnv()
-    rollout = run_option(env, SAFE_SPRINT_PATH_FOLLOW, _dusk(location="settlement", books=3), 0, GAMMA)
-    assert rollout.env_steps == 1
+    starving = _dusk(player_health=1.0, player_food=0.0, food_items=0)
+    rollout = run_option(env, PROTECTED_WAIT, starving, 0, GAMMA)
+    assert rollout.env_steps == 1 and rollout.task_status == TASK_FAILED
     assert np.allclose(rollout.motives, phi(env.state), atol=1e-6)
+
+
+def test_the_evaluation_horizon_runs_to_sunrise():
+    assert steps_to_sunrise(dusk_state(), MISSION) == MISSION.night_steps
+    assert steps_to_sunrise(_dusk(world_tick=MISSION.sunrise_tick - 10), MISSION) == 1
+    assert steps_to_sunrise(_dusk(world_tick=MISSION.sunrise_tick + 500), MISSION) == 1
+    outcome = paired_rollout(VillageEnv(), TRADE_MENU_HOTKEYS, dusk_state(), seed=0, gamma=GAMMA)
+    assert outcome.horizon == MISSION.night_steps
 
 
 def test_the_payoff_is_not_a_function_of_the_motives():

@@ -11,7 +11,7 @@ only the simulator and are meant to be fitted against real-server rollouts.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 LOCATIONS = ("hall", "perimeter", "route", "settlement")
 
@@ -53,15 +53,20 @@ class VillageModelParams:
 
     hostile_spawn_start_tick: int = 13000
     hostile_spawn_rate: float = 1.2
+    # Villagers sleep indoors from sunset and, on Normal difficulty, zombies
+    # cannot break doors, so hostile mobs only reach villagers when this is off
+    # (Hard difficulty). Raiders break doors on Normal and always reach them.
+    villagers_shelter_from_hostiles: bool = True
     hostile_villager_hit_chance: float = 0.3
     hostile_player_hit_chance: float = 0.2
     hostile_damage: float = 3.0
     golem_kill_chance: float = 0.8
     patrol_encounter_chance: float = 0.04
-    raid_waves: int = 3
-    raiders_first_wave: int = 3
+    # Normal-difficulty raids: raiders per wave, and the mean hit of a raider
+    # (pillager crossbow 4 HP, vindicator axe 13 HP) weighted by wave makeup.
+    raiders_per_wave: tuple[int, ...] = field(default=(5, 6, 6, 9, 12))
     raider_hit_chance: float = 0.4
-    raider_damage: float = 4.0
+    raider_damage: float = 6.85
     archer_kills_per_step: int = 2
     archer_bad_outcome_chance: float = 0.05
     archer_bad_outcome_damage: float = 4.0
@@ -83,3 +88,19 @@ class VillageModelParams:
     starvation_damage: float = 1.0
     regen_food_threshold: float = 18.0
     regen_per_step: float = 1.0
+
+    @property
+    def raid_waves(self) -> int:
+        return len(self.raiders_per_wave)
+
+    @property
+    def raid_size(self) -> int:
+        return sum(self.raiders_per_wave)
+
+    def raiders_in_wave(self, waves_left: int) -> int:
+        """Raiders in the wave that starts when ``waves_left`` waves remain."""
+        return self.raiders_per_wave[self.raid_waves - waves_left]
+
+    def raiders_to_come(self, waves_left: int) -> int:
+        """Raiders in the waves after the current one."""
+        return sum(self.raiders_per_wave[self.raid_waves - waves_left + 1:])

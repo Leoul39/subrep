@@ -39,16 +39,24 @@ def shelter(state: VillageState, params: VillageModelParams) -> float:
 
 
 def safety(state: VillageState, mission: VillageMission, params: VillageModelParams) -> float:
-    """Villager health and casualties, player health, armor, hostile proximity,
-    raid intensity and threat exposure, equally weighted."""
-    villagers = sum(state.villager_health) / (20.0 * mission.protected_villagers)
+    """Villager survival times the mean of the other safety terms.
+
+    Survival is the share of protected villagers alive, so every casualty
+    scales Safety down. The other terms, equally weighted, are the health of
+    the living villagers, player health, armor, hostile proximity, raid
+    intensity (raiders present and still to come, as a share of a full raid)
+    and threat exposure.
+    """
+    alive = state.villagers_alive
+    survival = alive / mission.protected_villagers
+    villager_health = sum(state.villager_health) / (20.0 * alive) if alive else 0.0
     player = state.player_health / 20.0
     armor = state.armor / 20.0
     hostiles = 1.0 - min(1.0, state.hostiles / mission.threat_cap)
-    raid_pressure = state.raiders + params.raiders_first_wave * state.raid_waves_left if state.raid_active else 0
-    raid = 1.0 - min(1.0, raid_pressure / mission.threat_cap)
-    terms = (villagers, player, armor, hostiles, raid, shelter(state, params))
-    return _clip01(sum(terms) / len(terms))
+    raid_pressure = state.raiders + params.raiders_to_come(state.raid_waves_left) if state.raid_active else 0
+    raid = 1.0 - min(1.0, raid_pressure / params.raid_size)
+    terms = (villager_health, player, armor, hostiles, raid, shelter(state, params))
+    return _clip01(survival * sum(terms) / len(terms))
 
 
 def reputation(state: VillageState) -> float:

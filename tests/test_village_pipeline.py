@@ -21,6 +21,7 @@ from village_sim.contexts import PARTITIONS, option_contexts, partition_of, samp
 from village_sim.mission import VillageMission
 from village_sim.motives import MOTIVE_NAMES
 from village_sim.options import CANDIDATE_OPTIONS, OPTIONS, SAFE_SPRINT_PATH_FOLLOW, TORCH_CORRIDOR
+from village_sim.rollouts import return_scale
 
 
 @pytest.fixture(scope="module")
@@ -138,12 +139,15 @@ def test_rejected_options_keep_their_evidence_but_not_a_certificate(run):
         assert record["lower_bound"] < -PDS_EPSILON
 
 
-def test_evidence_pairs_share_start_states_and_horizons(run):
+def test_evidence_pairs_run_until_sunrise_with_a_matching_scale(run):
+    mission = VillageMission()
     for pairs in _evidence(run).values():
         for pair in pairs:
             assert pair["baseline_id"] == "protected_wait_v1"
-            assert pair["horizon"] == 12
+            assert 1 <= pair["horizon"] <= mission.night_steps
+            assert pair["return_scale"] == pytest.approx(return_scale(pair["gamma"], pair["horizon"]))
             assert pair["candidate"]["option_steps"] <= OPTIONS[pair["option_id"]].max_steps
+            assert pair["candidate"]["env_steps"] <= pair["horizon"]
 
 
 def test_manifest_records_config_counts_and_checksums(run):

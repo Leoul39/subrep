@@ -15,7 +15,9 @@ At each decision point the agent observes the world state x and:
    shows what the gates prevent);
 5. runs the chosen option in the world until it terminates.
 
-The night ends when the contract is delivered, fails, or the sun rises.
+Options are judged over the rest of the night (option, then the baseline until
+sunrise). The night always runs to sunrise, after delivery too, unless the
+player dies or the contract fails first.
 """
 
 from __future__ import annotations
@@ -38,8 +40,8 @@ from village_sim.contexts import partition_of
 from village_sim.env import VillageEnv
 from village_sim.motives import phi
 from village_sim.options import CANDIDATE_OPTIONS, PROTECTED_WAIT, VillageOption
-from village_sim.rollouts import EVALUATION_HORIZON, evaluate_option, return_scale
-from village_sim.state import TASK_OPEN, VillageState
+from village_sim.rollouts import evaluate_option, return_scale, steps_to_sunrise
+from village_sim.state import VillageState
 
 # The reference scenario's weight schedule: moderate safety priority at dusk,
 # a bounded shift toward safety while threats are present, and a shift toward
@@ -166,6 +168,7 @@ class NightRunner:
         confidence: float = 0.95,
         max_decisions: int = 500,
         gated: bool = True,
+        wait_steps: int = 5,
     ) -> None:
         if model_seeds < 2:
             raise ValueError("model_seeds must be at least 2 for a confidence bound")
@@ -177,6 +180,7 @@ class NightRunner:
         self.confidence = confidence
         self.max_decisions = max_decisions
         self.gated = gated
+        self.wait_steps = wait_steps
         self.model = VillageEnv()
 
     def assess(
@@ -188,6 +192,7 @@ class NightRunner:
     ) -> tuple[list[Assessment], list[Certificate]]:
         """Gate every startable option at ``state``; certify the admitted ones."""
         schema = VILLAGE_SYNTHETIC_OBJECTIVE_SCHEMA
+        horizon = steps_to_sunrise(state, self.model.mission)
         assessments: list[Assessment] = []
         certificates: list[Certificate] = []
         for option in self.options:
@@ -211,7 +216,7 @@ class NightRunner:
                     gamma=self.gamma,
                     baseline_id=PROTECTED_WAIT.option_id,
                     environment=self.model.metadata["environment_id"],
-                    episode_length=EVALUATION_HORIZON,
+                    episode_length=horizon,
                     version="1.0",
                     domain_id=schema.domain_id,
                     motive_schema_version=schema.motive_schema_version,
@@ -221,7 +226,7 @@ class NightRunner:
                     rollout_seeds=self.model_seeds,
                     confidence_level=stats.confidence,
                     lower_bound=stats.lower_bound,
-                    return_scale=return_scale(self.gamma, EVALUATION_HORIZON),
+                    return_scale=return_scale(self.gamma, horizon),
                     evidence_ref=f"model-rollouts#{label}",
                 ))
             assessments.append(Assessment(
@@ -266,8 +271,9 @@ class NightRunner:
         audit: list[Certificate] = []
         lookup = {option.option_id: option for option in self.options}
 
+        mission = self.model.mission
         for index in range(self.max_decisions):
-            if state.task_status != TASK_OPEN:
+            if state.night_over(mission):
                 break
             label = f"night-{seed}-tick-{state.world_tick}"
             weights = self.weight_fn(state)
@@ -277,20 +283,30 @@ class NightRunner:
                 chosen_id, score = self.select(certificates, weights)
             else:
                 chosen_id, score = _best_assessed(assessments)
+            situation = partition_of(state)
             if chosen_id is None or score <= 0.0:
-                chosen, chosen_id, max_steps = PROTECTED_WAIT, PROTECTED_WAIT.option_id, 1
+                chosen, chosen_id = PROTECTED_WAIT, PROTECTED_WAIT.option_id
             else:
                 chosen = lookup[chosen_id]
+            run = chosen.new_run(state, mission)
+            if chosen is PROTECTED_WAIT:
+                max_steps = self.wait_steps
+
+                def run_ends(obs, info, situation=situation):
+                    return partition_of(obs) != situation
+            else:
                 max_steps = chosen.max_steps
 
-            run = chosen.new_run(state, self.model.mission)
+                def run_ends(obs, info, run=run):
+                    return run.done(obs)
+
             world.events, world.payoff = [], 0.0
             executor = SkillExecutor(
                 env=world,
                 policy_fn=run.act,
                 gamma=self.gamma,
                 max_steps=max_steps,
-                stop_fn=lambda obs, info: run.done(obs),
+                stop_fn=run_ends,
                 strict=True,
                 verbose=False,
             )
@@ -300,7 +316,7 @@ class NightRunner:
             decisions.append(Decision(
                 index=index,
                 world_tick=before.world_tick,
-                partition=partition_of(before),
+                partition=situation,
                 weights=tuple(float(w) for w in weights),
                 assessments=tuple(assessments),
                 chosen=chosen_id,

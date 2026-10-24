@@ -1,19 +1,22 @@
 """
 Paired option rollouts for the village night.
 
-Candidate and baseline are compared over the same declared horizon H from the
-same restored state and seed. The candidate runs its option until the option
-terminates (tau steps) and then follows the baseline until H; the baseline
-runs for all H steps. Both go through the shared ``SkillExecutor``. A rollout that ends
-before H (contract delivered or failed) keeps its final state for the
-remaining steps, so both returns always cover H steps:
+Candidate and baseline are compared over the same horizon from the same
+restored state and seed: the rest of the night, H steps until sunrise. The
+candidate runs its option until the option terminates (tau steps) and then
+follows the baseline until sunrise; the baseline runs for all H steps. This is
+a rollout of the option against the baseline policy, so choosing the best
+option this way does at least as well as the baseline. Both sides go through
+the shared ``SkillExecutor``. A rollout that ends early (the player dies or the
+contract fails) keeps its final state for the remaining steps, so both returns
+always cover H steps:
 
     r_hat = sum_{t<H} gamma^t r_t
     n_hat = return_scale * sum_{t<H} gamma^t phi(x_{t+1})
 
 ``return_scale = 1 / sum_{t<H} gamma^t`` turns the motive return into a
-discounted average in [0, 1] per coordinate, so motive deltas and the PDS
-budget share one declared scale.
+discounted average in [0, 1] per coordinate, so motive deltas from different
+start times and the PDS budget share one declared scale.
 """
 
 from __future__ import annotations
@@ -25,14 +28,18 @@ import numpy as np
 
 from env.skill_executor import SkillExecutor
 from village_sim.env import VillageEnv
-from village_sim.options import CANDIDATE_OPTIONS, PROTECTED_WAIT, VillageOption
+from village_sim.mission import VillageMission
+from village_sim.options import PROTECTED_WAIT, VillageOption
 from village_sim.state import VillageState
 
-EVALUATION_HORIZON = 12
-assert all(option.max_steps <= EVALUATION_HORIZON for option in CANDIDATE_OPTIONS)
+
+def steps_to_sunrise(state: VillageState, mission: VillageMission) -> int:
+    """Evaluation horizon from ``state``: whole steps left in the night, at least one."""
+    ticks_left = mission.sunrise_tick - state.world_tick
+    return max(1, -(-ticks_left // mission.ticks_per_step))
 
 
-def return_scale(gamma: float, horizon: int = EVALUATION_HORIZON) -> float:
+def return_scale(gamma: float, horizon: int) -> float:
     """Factor that turns an H-step discounted motive sum into a discounted average."""
     if horizon < 1:
         raise ValueError(f"horizon must be at least 1, got {horizon}")
@@ -102,10 +109,16 @@ class _OptionThenBaseline:
     the switch happens on the step after the option's last action.
     """
 
-    def __init__(self, option: VillageOption, start: VillageState, env: VillageEnv) -> None:
+    def __init__(
+        self,
+        option: VillageOption,
+        start: VillageState,
+        env: VillageEnv,
+        baseline: VillageOption,
+    ) -> None:
         self.option = option
         self.run = option.new_run(start, env.mission)
-        self.follow = PROTECTED_WAIT.new_run(start, env.mission)
+        self.follow = baseline.new_run(start, env.mission)
         self.steps = 0
         self.option_steps: int | None = None
         self.stop_reason = "horizon"
@@ -129,14 +142,18 @@ def run_option(
     start: VillageState,
     seed: int,
     gamma: float,
-    horizon: int = EVALUATION_HORIZON,
+    horizon: int | None = None,
+    baseline: VillageOption = PROTECTED_WAIT,
 ) -> Rollout:
-    """Run ``option`` from ``start`` with ``seed``, then the baseline until ``horizon``.
+    """Run ``option`` from ``start`` with ``seed``, then ``baseline`` until
+    ``horizon`` steps have passed (by default, until sunrise).
 
     The whole horizon is one executor pass, so candidate and baseline returns
     are summed the same way and identical motive sequences give identical sums.
     """
-    policy = _OptionThenBaseline(option, start, env)
+    if horizon is None:
+        horizon = steps_to_sunrise(start, env.mission)
+    policy = _OptionThenBaseline(option, start, env, baseline)
     executor = SkillExecutor(
         env=env,
         policy_fn=policy,
@@ -176,17 +193,19 @@ def paired_rollout(
     seed: int,
     gamma: float,
     baseline: VillageOption = PROTECTED_WAIT,
-    horizon: int = EVALUATION_HORIZON,
+    horizon: int | None = None,
 ) -> PairedOutcome:
     """Candidate and baseline from the same state and seed over the same horizon."""
+    if horizon is None:
+        horizon = steps_to_sunrise(start, env.mission)
     return PairedOutcome(
         option_id=option.option_id,
         baseline_id=baseline.option_id,
         seed=int(seed),
         horizon=horizon,
         gamma=float(gamma),
-        candidate=run_option(env, option, start, seed, gamma, horizon),
-        baseline=run_option(env, baseline, start, seed, gamma, horizon),
+        candidate=run_option(env, option, start, seed, gamma, horizon, baseline),
+        baseline=run_option(env, baseline, start, seed, gamma, horizon, baseline),
     )
 
 
@@ -197,7 +216,7 @@ def evaluate_option(
     seeds: Iterable[int],
     gamma: float,
     baseline: VillageOption = PROTECTED_WAIT,
-    horizon: int = EVALUATION_HORIZON,
+    horizon: int | None = None,
 ) -> list[PairedOutcome]:
     """Paired rollouts of ``option`` from ``start`` for every seed."""
     return [paired_rollout(env, option, start, seed, gamma, baseline, horizon) for seed in seeds]

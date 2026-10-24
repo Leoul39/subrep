@@ -11,8 +11,12 @@ One step is ``mission.ticks_per_step`` game ticks. Actions are the primitive
 behaviours a Mineflayer bot can perform (move, craft, place, trade, shoot,
 eat). The motive vector returned by ``step`` is phi of the state the action
 leads to, so an option's own result is part of its motive return.
-``info["task_payoff"]`` is the contract payoff: +1 when the books are
-delivered before sunrise, -1 when the contract fails, 0 otherwise.
+``info["task_payoff"]`` is the contract payoff: +1 on the step the books are
+delivered, -1 on the step the contract fails (the player dies, a lost raid
+invalidates it, or the sun rises first), 0 otherwise. The night runs to
+sunrise even after delivery, so casualties and reputation are always judged
+at the same moment; it ends early only if the player dies or the contract
+fails.
 
 ``reset(options={"state": s})`` restores a saved ``VillageState`` so paired
 candidate and baseline rollouts can start from the same state with the same
@@ -109,8 +113,7 @@ class VillageEnv:
         self._apply_action(action, events)
         payoff = self._settle_delivery(events)
         self._advance_world(action, events)
-        if s.task_status == TASK_OPEN:
-            payoff = self._settle_failure(events)
+        payoff += self._settle_failure(events)
 
         motives = phi(s, self.mission, self.params)
         info = {
@@ -119,7 +122,7 @@ class VillageEnv:
             "raid_active": s.raid_active,
             "events": events,
         }
-        return s.copy(), motives, s.task_status != TASK_OPEN, False, info
+        return s.copy(), motives, s.night_over(self.mission), False, info
 
     def close(self) -> None:
         pass
@@ -140,7 +143,7 @@ class VillageEnv:
         if action not in ACTIONS:
             raise ValueError(f"Unknown village action: {action!r}")
         s, m = self.state, self.mission
-        if s.task_status != TASK_OPEN:
+        if s.night_over(m):
             raise ValueError("The night is over; reset() before stepping again")
         in_village = s.location in ("hall", "perimeter")
         requirements = {
@@ -274,7 +277,7 @@ class VillageEnv:
                 self._remove_threats(1)
 
         for _ in range(s.hostiles):
-            if self.rng.random() < p.hostile_villager_hit_chance:
+            if not p.villagers_shelter_from_hostiles and self.rng.random() < p.hostile_villager_hit_chance:
                 self._hurt_random_villager(p.hostile_damage, events)
             if s.location == "perimeter" and self.rng.random() < p.hostile_player_hit_chance:
                 self._hurt_player(p.hostile_damage)
@@ -309,7 +312,7 @@ class VillageEnv:
             s.bad_omen = False
             s.raid_active = True
             s.raid_waves_left = p.raid_waves
-            s.raiders = p.raiders_first_wave
+            s.raiders = p.raiders_in_wave(p.raid_waves)
             events.append("raid_started")
         if not s.raid_active:
             return
@@ -323,12 +326,13 @@ class VillageEnv:
             s.raiders = 0
             s.raid_waves_left = 0
             s.raid_outcome = RAID_LOST
-            s.contract_valid = False
+            if s.task_status == TASK_OPEN:
+                s.contract_valid = False
             events.append("raid_lost")
         elif s.raiders == 0:
             s.raid_waves_left -= 1
             if s.raid_waves_left > 0:
-                s.raiders = p.raiders_first_wave + (p.raid_waves - s.raid_waves_left)
+                s.raiders = p.raiders_in_wave(s.raid_waves_left)
                 events.append("raid_wave")
             else:
                 s.raid_active = False
@@ -341,6 +345,8 @@ class VillageEnv:
 
     def _settle_delivery(self, events: list[str]) -> float:
         s, m = self.state, self.mission
+        if s.task_status != TASK_OPEN:
+            return 0.0
         delivered = s.books_delivered * m.book_value >= m.contract_value
         if delivered and s.contract_valid and s.world_tick < m.sunrise_tick:
             s.task_status = TASK_DELIVERED
@@ -350,6 +356,8 @@ class VillageEnv:
 
     def _settle_failure(self, events: list[str]) -> float:
         s, m = self.state, self.mission
+        if s.task_status != TASK_OPEN:
+            return 0.0
         if s.player_health <= 0.0 or not s.contract_valid or s.world_tick >= m.sunrise_tick:
             s.task_status = TASK_FAILED
             events.append("contract_failed")

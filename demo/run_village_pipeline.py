@@ -4,7 +4,7 @@ Certify the village options and build the six-objective skill library.
 For every certification partition and every option that can start there:
 
     sampled contexts from the option's initiation set
-        -> paired option/baseline rollouts over the evaluation horizon
+        -> paired option/baseline rollouts until sunrise
         -> confidence-bounded CDS / PDS gate (FULL_SIMPLEX, six objectives)
         -> certificate with its evidence -> MeTTa store -> skill library
         -> admission audit report
@@ -34,7 +34,7 @@ from village_sim.contexts import PARTITIONS, option_contexts
 from village_sim.env import VillageEnv
 from village_sim.motives import MOTIVE_NAMES
 from village_sim.options import CANDIDATE_OPTIONS, PROTECTED_WAIT, VillageOption
-from village_sim.rollouts import EVALUATION_HORIZON, PairedOutcome, paired_rollout, return_scale
+from village_sim.rollouts import PairedOutcome, paired_rollout
 
 GAMMA = 0.99
 PDS_EPSILON = 0.10
@@ -53,7 +53,7 @@ EVIDENCE_FILE = "paired_evidence.jsonl"
 def _config(contexts_per_partition: int, seeds_per_context: int, partitions, options) -> dict:
     return {
         "gamma": GAMMA,
-        "horizon": EVALUATION_HORIZON,
+        "horizon": "until_sunrise",
         "pds_epsilon": PDS_EPSILON,
         "confidence": CONFIDENCE,
         "contexts_per_partition": contexts_per_partition,
@@ -83,10 +83,17 @@ def _certificate(
     gate: str,
     stats: GateStatistics,
     seeds: tuple[int, ...],
+    horizon: int,
     env: VillageEnv,
     created: str,
     run_id: str,
 ) -> Certificate:
+    """Certificate for an option in a partition.
+
+    Contexts in a partition start at different times, so each pair has its own
+    horizon and return scale; ``episode_length`` is their rounded mean and the
+    per-pair scales are in the evidence file.
+    """
     epsilon = PDS_EPSILON if gate == "PDS" else 0.0
     schema = VILLAGE_SYNTHETIC_OBJECTIVE_SCHEMA
     return Certificate(
@@ -101,7 +108,7 @@ def _certificate(
         gamma=GAMMA,
         baseline_id=PROTECTED_WAIT.option_id,
         environment=env.metadata["environment_id"],
-        episode_length=EVALUATION_HORIZON,
+        episode_length=horizon,
         version=VERSION,
         weight_region_type="FULL_SIMPLEX",
         domain_id=schema.domain_id,
@@ -112,7 +119,6 @@ def _certificate(
         rollout_seeds=seeds,
         confidence_level=stats.confidence,
         lower_bound=stats.lower_bound,
-        return_scale=return_scale(GAMMA, EVALUATION_HORIZON),
         evidence_ref=f"{EVIDENCE_FILE}#run={run_id}",
     )
 
@@ -162,7 +168,7 @@ def run_pipeline(
     records: list[dict] = []
 
     if verbose:
-        print(f"Village certification  run={run_id}  horizon={EVALUATION_HORIZON}  "
+        print(f"Village certification  run={run_id}  horizon=until sunrise  "
               f"epsilon={PDS_EPSILON}  confidence={CONFIDENCE}")
         print(f"{'skill':40s} {'pairs':>5s} {'mean dr':>8s} {'worst':>8s} {'lcb':>8s}  result")
 
@@ -175,11 +181,12 @@ def run_pipeline(
             pairs: list[PairedOutcome] = []
             for index, context in enumerate(contexts):
                 for seed in seeds:
-                    outcome = paired_rollout(env, option, context, seed, GAMMA, horizon=EVALUATION_HORIZON)
+                    outcome = paired_rollout(env, option, context, seed, GAMMA)
                     pairs.append(outcome)
                     evidence.append(_evidence_line(run_id, skill_id, partition, index, outcome))
 
             stats = gate_statistics([p.delta_r for p in pairs], [p.delta_n for p in pairs], CONFIDENCE)
+            horizon = max(1, round(sum(p.horizon for p in pairs) / len(pairs)))
             enough = len(contexts) >= contexts_per_partition and len(pairs) >= MIN_PAIRS
             gate = stats.admitting_gate(PDS_EPSILON) if enough else None
             failure_reason = None
@@ -197,7 +204,7 @@ def run_pipeline(
                     f"< -epsilon = {-PDS_EPSILON}"
                 )
             else:
-                cert = _certificate(skill_id, partition, gate, stats, seeds, env, created, run_id)
+                cert = _certificate(skill_id, partition, gate, stats, seeds, horizon, env, created, run_id)
                 if not store.add(cert):
                     gate, category, failure_reason = None, RejectionCategory.DUPLICATE_SKILL_ID, "duplicate skill_id"
                 elif not library.add_skill(skill_id, cert, option.new_run):
@@ -221,7 +228,7 @@ def run_pipeline(
                 "baseline_id": PROTECTED_WAIT.option_id,
                 "environment": env.metadata["environment_id"],
                 "seed": seeds[0],
-                "episode_length": EVALUATION_HORIZON,
+                "episode_length": horizon,
             }
             report.add_from_dict(record)
             records.append({**record, "partition": partition, "pairs": len(pairs),

@@ -66,7 +66,7 @@ def sample_partition_state(
             state.hostiles = rng.randint(0, 2)
             state.raid_active = True
             state.raid_waves_left = rng.randint(1, params.raid_waves)
-            state.raiders = rng.randint(1, params.raiders_first_wave + params.raid_waves - 1)
+            state.raiders = rng.randint(1, params.raiders_in_wave(state.raid_waves_left))
     if rng.random() < 0.25:
         state.books = mission.books_required
     return state

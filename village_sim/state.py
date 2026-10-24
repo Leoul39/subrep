@@ -91,6 +91,14 @@ class VillageState:
     def threats(self) -> int:
         return self.hostiles + self.raiders
 
+    def night_over(self, mission: VillageMission) -> bool:
+        """The sun is up, the player is dead, or the contract has failed."""
+        return (
+            self.world_tick >= mission.sunrise_tick
+            or self.player_health <= 0.0
+            or self.task_status == TASK_FAILED
+        )
+
     def can_trade(self, mission: VillageMission) -> bool:
         """A librarian is alive and reachable; the first villagers are the librarians."""
         librarians = self.villager_health[: mission.librarians]
