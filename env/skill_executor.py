@@ -24,7 +24,8 @@ class ExecutionResult:
         terminated: True when the episode ended in a natural terminal state.
         steps: Number of environment steps executed.
         stop_reason: One of ``'terminated'``, ``'truncated'``, ``'max_steps'``,
-                     or ``'unknown'``.
+                     ``'stop_fn'`` (the caller's stop condition fired), or
+                     ``'unknown'``.
         motive_names: Ordered list of motive dimension labels from env metadata,
                       or ``None`` when the environment exposes no metadata.
         behavior_probability: Probability of the chosen action under the policy,
@@ -69,6 +70,8 @@ class SkillExecutor:
         max_steps: Optional[int] = None,
         payoff_fn: Optional[Callable[[np.ndarray], float]] = None,
         strict: bool = False,
+        stop_fn: Optional[Callable[[object, dict], bool]] = None,
+        verbose: bool = True,
     ) -> None:
         """
         Initialize executor configuration.
@@ -80,6 +83,11 @@ class SkillExecutor:
             payoff_fn: Optional scalarization function for reward vectors.
             strict: When True, raise on protocol violations instead of
                     warning and falling back. Use for certified rollouts.
+            stop_fn: Optional ``(obs, info) -> bool`` checked after every
+                     step; returning True ends the rollout. Lets a
+                     temporally extended option end on its own termination
+                     condition instead of running to the end of the episode.
+            verbose: When False, the per-episode console summary is skipped.
         """
         if not (0.0 <= gamma <= 1.0):
             raise ValueError("gamma must be in [0, 1]")
@@ -90,6 +98,8 @@ class SkillExecutor:
         self.max_steps = max_steps
         self.payoff_fn = payoff_fn or (lambda reward_vec: float(np.sum(reward_vec)))
         self.strict = strict
+        self.stop_fn = stop_fn
+        self.verbose = verbose
         self.last_run_info = None         # Holds diagnostics from the most recent run for downstream debugging.
 
     @classmethod
@@ -129,12 +139,23 @@ class SkillExecutor:
         executor.pilot_checkpoint_path = checkpoint_path
         return executor
 
-    def run_episode(self, initial_obs: Optional[np.ndarray] = None):
+    def run_episode(
+        self,
+        initial_obs: Optional[np.ndarray] = None,
+        *,
+        seed: Optional[int] = None,
+        options: Optional[dict] = None,
+    ):
         """
         Run one rollout and return (total_payoff, motive_deltas, terminated).
         Args:
             initial_obs: If provided, skip env.reset() and start from this state.
+            seed: Seed forwarded to env.reset() when the executor resets.
+            options: Options forwarded to env.reset() when the executor
+                     resets, e.g. a saved state to restore.
         """
+        if initial_obs is not None and (seed is not None or options is not None):
+            raise ValueError("seed and options apply only when the executor resets the env")
         # Determine fallback motive dimension if available
         fallback_dim = 2
         if hasattr(self.env, "metadata") and isinstance(self.env.metadata, dict):
@@ -149,7 +170,12 @@ class SkillExecutor:
             # Use provided observation instead of resetting.
             obs = np.array(initial_obs, copy=True) if isinstance(initial_obs, (np.ndarray, list, tuple)) else copy.copy(initial_obs)
         else:
-            reset_out = self.env.reset()
+            reset_kwargs = {}
+            if seed is not None:
+                reset_kwargs["seed"] = seed
+            if options is not None:
+                reset_kwargs["options"] = options
+            reset_out = self.env.reset(**reset_kwargs)
             if isinstance(reset_out, tuple) and len(reset_out) == 2:
                 obs, _ = reset_out
             else:
@@ -223,6 +249,9 @@ class SkillExecutor:
             if truncated:
                 stop_reason = "truncated"
                 break
+            if self.stop_fn is not None and self.stop_fn(obs, info):
+                stop_reason = "stop_fn"
+                break
 
             discount *= self.gamma
 
@@ -235,13 +264,13 @@ class SkillExecutor:
         if hasattr(self.env, "metadata") and isinstance(self.env.metadata, dict):
             motive_names = self.env.metadata.get("motive_names")
 
-        # Console summary required by task spec.
-        print("Episode summary:")
-        print(f"  steps: {steps}")
-        print(f"  total_payoff: {total_payoff:.6f}")
-        print(f"  motive_deltas: {motive_deltas}")
-        print(f"  final_reward: {final_reward}")
-        print(f"  end_reason: {stop_reason}")
+        if self.verbose:
+            print("Episode summary:")
+            print(f"  steps: {steps}")
+            print(f"  total_payoff: {total_payoff:.6f}")
+            print(f"  motive_deltas: {motive_deltas}")
+            print(f"  final_reward: {final_reward}")
+            print(f"  end_reason: {stop_reason}")
 
         # Extra run metadata kept without changing public return tuple.
         self.last_run_info = {

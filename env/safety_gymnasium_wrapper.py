@@ -68,6 +68,7 @@ class SafeRLGymnasiumEnv:
 
     @property
     def metadata(self) -> dict:
+<<<<<<< HEAD
         """Environment metadata conforming to SubRepBaseEnv specification."""
         return {
             "environment_id": "subrep_safety_gymnasium_v1",
@@ -79,10 +80,24 @@ class SafeRLGymnasiumEnv:
         }
 
     def reset(self, seed=None):
+=======
+        """Environment metadata dictionary conforming to SubRep specification."""
+        return {
+            "environment_id": "subrep_safety_gymnasium_v1",
+            "motive_names": ["Safety", "Task"],
+            "motive_schema_version": "1.0",
+            "payoff_schema_version": "1.0",
+            "observation_schema_version": "1.0",
+            "action_schema_version": "1.0",
+        }
+
+    def reset(self, seed=None, options=None):
+        kwargs = {} if options is None else {"options": options}
+>>>>>>> upstream/refactor/minecraft-environment
         if seed is not None:
             self.seed = int(seed)
-            return self.env.reset(seed=self.seed)
-        return self.env.reset()
+            return self.env.reset(seed=self.seed, **kwargs)
+        return self.env.reset(**kwargs)
 
     def step(self, action):
         obs, reward, cost, terminated, truncated, info = self.env.step(action)
@@ -94,6 +109,7 @@ class SafeRLGymnasiumEnv:
         # task_payoff: required SubRepBaseEnv channel (scalar, separate from motives)
         info["task_payoff"] = reward_value
         info["task_reward"] = reward_value
+        info["task_payoff"] = reward_value
         info["safety_cost"] = cost_value
         info["safety_motive"] = float(reward_vector[0])
         info["task_motive"] = float(reward_vector[1])

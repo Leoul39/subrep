@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from gymnasium.spaces import Box
 
 from env.base_env import SubRepBaseEnv, validate_env_metadata
 from env.lunar_lander_wrapper import SubRepEnv
@@ -27,7 +28,7 @@ def env_instance(request):
 def _get_sample_action(env):
     """Return a valid action for the given environment."""
     if isinstance(env, VillageEnv):
-        return "idle"
+        return "wait"
     return 0
 
 
@@ -153,7 +154,7 @@ def test_validate_env_metadata_rejects_invalid():
 def test_executor_works_on_village_env():
     """SkillExecutor runs full rollout on VillageEnv and outputs 6D motives."""
     env = VillageEnv(seed=1)
-    policy = lambda state: "idle"
+    policy = lambda state: "wait"
     executor = SkillExecutor(env=env, policy_fn=policy, max_steps=10)
     payoff, motives, terminated = executor.run_episode()
 
@@ -259,6 +260,8 @@ class _SafeGymStubEnv:
 
     def __init__(self):
         self._step_count = 0
+        self.observation_space = Box(low=-np.inf, high=np.inf, shape=(5,), dtype=np.float32)
+        self.action_space = Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
 
     def reset(self, seed=None):
         self._step_count = 0
@@ -278,26 +281,26 @@ class _SafeGymStubEnv:
         pass
 
 
-from env.safety_gymnasium_wrapper import SafetyGymnasiumEnv
+from env.safety_gymnasium_wrapper import SafeRLGymnasiumEnv
 
 
 def test_safety_gym_env_metadata_is_valid():
-    """SafetyGymnasiumEnv metadata passes validate_env_metadata."""
-    env = SafetyGymnasiumEnv(env=_SafeGymStubEnv())
+    """SafeRLGymnasiumEnv metadata passes validate_env_metadata."""
+    env = SafeRLGymnasiumEnv(make_env=lambda *_, **__: _SafeGymStubEnv())
     validate_env_metadata(env.metadata)
     env.close()
 
 
 def test_safety_gym_env_motive_names():
-    """SafetyGymnasiumEnv exposes [Safety, Task] motive names."""
-    env = SafetyGymnasiumEnv(env=_SafeGymStubEnv())
+    """SafeRLGymnasiumEnv exposes [Safety, Task] motive names."""
+    env = SafeRLGymnasiumEnv(make_env=lambda *_, **__: _SafeGymStubEnv())
     assert env.metadata["motive_names"] == ["Safety", "Task"]
     env.close()
 
 
 def test_safety_gym_reset_returns_two_tuple():
-    """SafetyGymnasiumEnv reset() returns (obs, info) 2-tuple."""
-    env = SafetyGymnasiumEnv(env=_SafeGymStubEnv())
+    """SafeRLGymnasiumEnv reset() returns (obs, info) 2-tuple."""
+    env = SafeRLGymnasiumEnv(make_env=lambda *_, **__: _SafeGymStubEnv())
     result = env.reset()
     assert isinstance(result, tuple) and len(result) == 2
     obs, info = result
@@ -307,8 +310,8 @@ def test_safety_gym_reset_returns_two_tuple():
 
 
 def test_safety_gym_step_returns_five_tuple():
-    """SafetyGymnasiumEnv step() returns (obs, motives, terminated, truncated, info) 5-tuple."""
-    env = SafetyGymnasiumEnv(env=_SafeGymStubEnv())
+    """SafeRLGymnasiumEnv step() returns (obs, motives, terminated, truncated, info) 5-tuple."""
+    env = SafeRLGymnasiumEnv(make_env=lambda *_, **__: _SafeGymStubEnv())
     env.reset()
     result = env.step(0)
     assert isinstance(result, tuple) and len(result) == 5
@@ -320,8 +323,8 @@ def test_safety_gym_step_returns_five_tuple():
 
 
 def test_safety_gym_motive_vector_is_2d_float32():
-    """SafetyGymnasiumEnv motive vector is shape (2,), dtype float32, finite."""
-    env = SafetyGymnasiumEnv(env=_SafeGymStubEnv())
+    """SafeRLGymnasiumEnv motive vector is shape (2,), dtype float32, finite."""
+    env = SafeRLGymnasiumEnv(make_env=lambda *_, **__: _SafeGymStubEnv())
     env.reset()
     _, motives, _, _, _ = env.step(0)
     assert motives.shape == (2,)
@@ -331,8 +334,8 @@ def test_safety_gym_motive_vector_is_2d_float32():
 
 
 def test_safety_gym_task_payoff_in_info():
-    """SafetyGymnasiumEnv step info contains finite scalar task_payoff."""
-    env = SafetyGymnasiumEnv(env=_SafeGymStubEnv())
+    """SafeRLGymnasiumEnv step info contains finite scalar task_payoff."""
+    env = SafeRLGymnasiumEnv(make_env=lambda *_, **__: _SafeGymStubEnv())
     env.reset()
     _, _, _, _, info = env.step(0)
     assert "task_payoff" in info
@@ -341,8 +344,8 @@ def test_safety_gym_task_payoff_in_info():
 
 
 def test_safety_gym_satisfies_base_protocol():
-    """SafetyGymnasiumEnv satisfies runtime_checkable SubRepBaseEnv protocol."""
-    env = SafetyGymnasiumEnv(env=_SafeGymStubEnv())
+    """SafeRLGymnasiumEnv satisfies runtime_checkable SubRepBaseEnv protocol."""
+    env = SafeRLGymnasiumEnv(make_env=lambda *_, **__: _SafeGymStubEnv())
     assert isinstance(env, SubRepBaseEnv)
     env.close()
 

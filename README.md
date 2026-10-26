@@ -10,7 +10,7 @@ This project validates the core mechanism in **MO-LunarLander**, storing certifi
 
 | Objective | Goal | Implemented Capabilities |
 | :--- | :--- | :--- |
-| **1. Neural Skill Generator + MDN** | Generate skill summaries and learn motive geometry from experience | 2-head MLP for payoff/motives; MDN input/output contract; candidate-set MDN training and evaluation; auxiliary gate/Q heads |
+| **1. Neural Skill Generator + MDN** | Generate skill summaries and learn motive geometry from experience | 2-head MLP for payoff/motives; MDN input/output contract with **feasibility guaranteed by construction at any objective count** (SASP); candidate-set MDN training and evaluation; auxiliary gate/Q heads |
 | **2. Core Certification** | Implement CDS/PDS admission tests | CDS test; PDS-epsilon test; MO-LunarLander integration |
 | **3. MeTTa Certificate Storage** | Store certificates as native atoms | Certificate schema; Hyperon-backed MeTTa bridge; store/retrieve/query operations |
 | **4. Validation** | Demonstrate the certificate-driven mechanism works | Certified skills pass; unsafe skills are rejected; admission reports document pass/fail behavior |
@@ -49,12 +49,21 @@ python -m pytest -v
 # Run certification tests only
 python -m pytest tests/test_certification_gates.py -v
 
+# Validate the MDN support-value feasibility guarantee at M = 2, 3, 5, 10, 50
+python -m pytest tests/test_mdn.py -v
+
+# Validate the exact greedy W_x solver and the M >= 2 certification chain
+python -m pytest tests/test_skill_library.py -v
+
 # Run the full demo pipeline
 python -m demo.run_full_pipeline
 
 # Validate mid-episode motive-shift reuse behavior
 python -m pytest tests/test_mid_episode_reuse_demo.py -v
 ```
+
+> MeTTa-backed tests require the `hyperon` package, which is Linux/macOS only. On Windows they are
+> skipped automatically via `pytest.importorskip`; run the suite under WSL to exercise them.
 
 ## Running the Demo Pipeline
 
@@ -206,7 +215,43 @@ The report includes:
 - CDS and PDS pass counts,
 - failure reasons for rejected skills,
 - example admitted/rejected records,
-- MDN source and support-geometry metadata.
+- MDN source and support-geometry metadata,
+- `infeasible_support_events`: a permanent feasibility counter, expected to read `0`. SASP makes an
+  empty `W_x` algebraically impossible, so any nonzero value signals a code regression rather than a
+  tuning problem.
+
+### Full Certification Audit
+
+Beyond the summary counts, the report carries **one audit entry per evaluated candidate**, so every
+admission and rejection can be inspected individually rather than through a handful of examples:
+
+- `audit_entries`: one record per candidate, each containing the skill ID, candidate policy, gate
+  type, admitted/rejected, `delta_r`, the complete `delta_n` vector, weight region type, support
+  values and support feasibility for `MDN_WX`, epsilon, admission margin, rejection category and
+  reason, baseline policy, environment, seed, and episode length,
+- `rejection_categories`: rejections grouped by cause — `GATE_FAILED`,
+  `DUPLICATE_SKILL_ID`, `LIBRARY_REVERIFICATION_FAILED`, `INFEASIBLE_SUPPORT` — rather than by
+  message text, so one cause counts once,
+- `by_policy` and `by_weight_region`: attempted/admitted/rejected/CDS/PDS totals per candidate
+  policy and per weight region.
+
+Each entry records the **exact inequality** the gates compared, with both sides exposed:
+
+```text
+CDS:  delta_r + worst_case >= 0
+PDS:  delta_r + worst_case >= -epsilon
+
+worst_case = min(delta_n)                    # FULL_SIMPLEX
+           = min_w (w . delta_n) over W_x    # MDN_WX, via the exact greedy solver
+```
+
+Both gate evaluations are stored for every candidate, admitted or rejected, so the report shows
+which gates were tried and how each fared — not only the gate that happened to admit. Vectors are
+rendered at their full length, so records stay readable at any objective count.
+
+The Markdown report adds matching sections: `Per-Candidate Audit` (with an `MDN_WX Support Geometry`
+sub-table when contextual decisions are present), `Summary by Candidate Policy`,
+`Summary by Weight Region`, and `Rejection Categories`.
 
 A representative mixed-candidate run produces both accepted and
 rejected skills:
@@ -214,16 +259,21 @@ rejected skills:
 | Metric | Value |
 | :--- | ---: |
 | Total attempted | 10 |
-| Admitted | 7 |
-| Rejected | 3 |
-| CDS admissions | 6 |
+| Admitted | 3 |
+| Rejected | 7 |
+| CDS admissions | 2 |
 | PDS admissions | 1 |
 
-The perturbed PPO candidate demonstrates a bounded trade-off case where CDS
-fails but PDS admits within the demo epsilon budget (`5.0` on the discounted
-rollout-return scale). Fixed-action candidates still make the report a realistic
-safety check: rejected candidates are discarded before entering both
-`CertificateStore` and `SkillLibrary`.
+`ppo_deterministic` and `noop` clear CDS. `ppo_then_side_tradeoff` is the
+bounded-trade-off case: worst case `-2.73`, so CDS rejects while PDS admits inside
+the `5.0` budget. Everything else is rejected before entering `CertificateStore`
+or `SkillLibrary`. Episode 10 re-runs `ppo_deterministic` from a different start
+state and is rejected — admission is a property of the rollout, not the policy.
+
+> **These counts changed in `fix/lunar-lander-fuel-reward-sign`.** The previous
+> split (7 admitted / 3 rejected) came from a sign-inverted fuel objective that
+> credited wasted fuel as a benefit; a random policy cleared CDS under it. See
+> *Objective Mapping* below and `docs/INTEGRATION_REPORT.md` §2.2.
 
 ## MDN Checkpoint Behavior
 
@@ -233,13 +283,30 @@ The pipeline looks for the trained MDN checkpoint at:
 models/mdn_policy_best.pth
 ```
 
-If that file is present, the pipeline uses the trained MDN and records:
+If a **SASP-compatible** checkpoint is present, the pipeline uses the trained MDN and records:
 
 ```text
 mdn_source: trained_checkpoint
 ```
 
-If the checkpoint is missing, the pipeline falls back to `StubMDN` so tests and smoke runs still work. The stub returns fixed alpha/support values and should not be confused with the trained MDN.
+The pipeline falls back to `StubMDN` in two cases, so tests and smoke runs always work. The stub
+returns fixed alpha/support values and should not be confused with the trained MDN.
+
+1. **The checkpoint is missing.**
+2. **The checkpoint predates SASP.** The support head widened from `M` to `2M` outputs, so older
+   weights cannot be reinterpreted — the first `M` logits are now softmax base-allocation logits and
+   the last `M` are slack gates, which is not what the old weights meant. Both loaders detect this
+   and raise `IncompatibleCheckpointError` rather than silently producing wrong support geometry.
+
+> **The checkpoint currently committed to this repository is pre-SASP.** Running the demo today
+> therefore prints `MIGRATION REQUIRED` and reports `mdn_source: stub`. **This is correct behavior,
+> not a failure.** Retrain to restore `trained_checkpoint` — see *MDN Training and Evaluation* below.
+
+Note that `train_mdn_candidate_sets` optimizes a policy loss that is a function of the Dirichlet
+`alpha` alone, so it does **not** train the support head. Support values are trained separately by
+`MDNSupportTrainer` (`generator/mdn_support_trainer.py`) against `WeightSetStore` targets. A retrain
+produces a shape-correct checkpoint with a freshly initialized support head — still feasible by
+construction, but not fitted.
 
 ## MDN Training and Evaluation
 
@@ -288,6 +355,28 @@ python -m generator.evaluate_mdn_candidate_sets \
 
 The evaluator reports lift versus PPO/random baselines, balanced top-1 accuracy, regret, gate F1, Q/motive error, per-objective Q diagnostics, and bootstrap confidence intervals.
 
+## Multi-Objective Benchmark
+
+SubRep includes a lightweight synthetic benchmark for validating the
+certification chain beyond the original two-objective LunarLander setup. It
+checks CDS/PDS admission, `SkillLibrary.query_admissible()`, `MDN_WX` support
+regions, reuse under motive shifts, negative-transfer cases, query timing, and
+simple baselines for `M = 3, 4, 5+`.
+
+```bash
+python -m demo.run_multi_objective_benchmark \
+  --objectives 3 4 5 \
+  --candidates 48 \
+  --seeds 11 23 37 \
+  --output demo/artifacts/multi_objective_benchmark.json \
+  --markdown-output demo/artifacts/multi_objective_benchmark.md
+```
+
+Outputs:
+
+- `demo/artifacts/multi_objective_benchmark.json`
+- `demo/artifacts/multi_objective_benchmark.md`
+
 ## Project Structure
 
 | Folder | Description |
@@ -311,24 +400,84 @@ The evaluator reports lift versus PPO/random baselines, balanced top-1 accuracy,
 - **Observation Space:** `(8,)`
 - **Reward Space:** `(2,)` mapped to `[Safety, Fuel]`
 
+#### Objective Mapping
+
+`MO-LunarLander-v3` emits four raw objectives, which `SubRepEnv._map_rewards`
+folds into SubRep's two:
+
+```text
+raw[0] terminal result (+100 landed / -100 crashed)  ->  Safety = raw[0] + raw[1]
+raw[1] dense potential-based shaping                 ->
+raw[2] main engine cost  (-m_power, <= 0)            ->  Fuel   = raw[2] + raw[3]
+raw[3] side engine cost  (-s_power, <= 0)            ->
+```
+
+Every motive is **larger-is-better**, since CDS admits on
+`delta_r + min_i(delta_n_i) >= 0`.
+
+The engine entries arrive as non-positive costs, so their sum is already oriented
+correctly — `0.0` when no engine fires, negative as fuel burns — and is passed
+through unchanged. Negating it would make burning fuel outrank conserving it;
+`tests/test_env.py::test_fuel_objective_prefers_less_fuel` pins the ordering.
+
+The SafeRL adapter *does* negate, because Safety-Gymnasium's `cost` is
+positive-is-worse. Same transform, opposite input convention — check the sign of
+the source before mapping a new environment.
+
 ### Neural Generator
 
 - **Architecture:** 2-head MLP
 - **Input:** state vector `(8,)`
 - **Outputs:** scalar payoff `(1,)`, motive vector `(2,)`
-- **Training:** supervised MSE on collected rollout payoff/motive totals
+- **Training data:** single-policy rollouts (`data/raw`), split into train
+  (75%), validation (12.5%), and test (12.5%) sets; the split
+  assignment is persisted to `data/generator_split_manifest.json`
+- **Training:** supervised MSE on the train split only; validation loss
+  drives model selection and early stopping; the best-validation checkpoint
+  is saved, with mid-training checkpoints written as new bests are found
+- **Evaluation:** MSE on the held-out test split (`evaluate_generator_mse.py`);
+  certification-focused metrics — admission rate, rejection reasons,
+  payoff/motive improvement over baseline, and comparison against the
+  non-neural candidate policies — on held-out seeds
+  (`evaluate_generator_report.py`)
 
 ### MDN
 
 - **Input:** context vector `(8,)`
-- **Outputs:** Dirichlet alpha, 2D support values, auxiliary gate logit, auxiliary Q prediction
-- **2D Support Contract:** support values satisfy `0 <= s0,s1 <= 1` and `s0 + s1 >= 1`
+- **Outputs:** Dirichlet alpha, support values, auxiliary gate logit, auxiliary Q prediction
+- **Support head width:** `2M` logits — first `M` are base-allocation, last `M` are slack gates
+- **Support Contract (any M):** `0 <= s_i <= 1` and `sum(s) >= 1`
+
+Support values define the admissible weighting region `W_x = { w in simplex : w_i <= s_i }` that the
+CDS and PDS gates evaluate against. Both constraints are required for that region to be non-empty:
+if `sum(s) < 1`, no weight vector can respect every per-objective cap while summing to 1.
+
+They are decoded by **SASP** (Softmax-Anchored Slack Parameterization), which makes both constraints
+hold **by construction at any objective count**:
+
+```python
+p = softmax(raw[..., :M])                                     # sums to 1
+g = slack_floor + (1 - slack_floor) * sigmoid(raw[..., M:])   # in (g_min, 1)
+s = p + (1 - p) * g
+```
+
+`s_i` is a convex combination of `p_i` and 1, so `s_i` is in `[0, 1]`; and
+`sum(s) = sum(p) + sum((1 - p_i) * g_i) >= 1`. Both are algebraic, so they hold for any network
+weights at every training step and at inference — no penalty term or coefficient tuning is involved.
+The construction is permutation-equivariant, so no objective is privileged by its index, and
+`slack_floor` prevents `W_x` collapsing to a single point.
 
 ### Certification
 
 - **CDS:** Cone-Dominant Subtask, universal-benefit admission
 - **PDS-epsilon:** Pareto-Dominant Subtask, bounded trade-off admission
-- **Supported regions:** `FULL_SIMPLEX` and 2D `MDN_WX`
+- **Supported regions:** `FULL_SIMPLEX` and `MDN_WX` at any `M >= 2`
+- **Worst-case evaluation:** exact `O(M log M)` greedy support function, no vertex enumeration
+
+The gates need `h_Wx(c) = max { w . c : w in simplex, w_i <= s_i }`. This is a linear program with a
+closed-form greedy solution — sort coordinates by coefficient descending and fill each to its cap
+until total mass 1 is placed — exact because the feasible set is the base polytope of a polymatroid.
+Vertex enumeration was retired because its cost grows combinatorially with M.
 
 ### MeTTa Integration
 
@@ -339,6 +488,7 @@ The evaluator reports lift versus PPO/random baselines, balanced top-1 accuracy,
 ## Documentation
 
 - `generator/README.md`: skill-generator and MDN training/evaluation
+- `docs/GENERATOR_TRAINING_PIPELINE.md`: skill-generator train/val/test pipeline, exact commands, and file outputs
 - `data/README.md`: rollout and candidate-set data schemas
 - `docs/CERTIFICATE_STORAGE.md`: certificate schema and MeTTa atom format
 - `docs/ZERO_SHOT_PROTOCOL.md`: full-simplex and MDN_WX reuse protocol
@@ -349,7 +499,10 @@ The evaluator reports lift versus PPO/random baselines, balanced top-1 accuracy,
 
 ## Future Work
 
-- Extend candidate-set MDN evaluation beyond the current 2-objective MO-LunarLander testbed.
+- Retrain the MDN under SASP and validate held-out metrics; the committed checkpoint is pre-SASP.
+- Exercise the MDN on a testbed with more than two objectives. The support head, certification chain,
+  certificate schema and MeTTa storage are all correct at any `M >= 2`, but MO-LunarLander only
+  provides `[Safety, Fuel]`, so M > 2 is currently covered by tests rather than by a live environment.
 - Add MetaMo integration for dynamic weight management and risk budgets.
 - Explore cross-paradigm skill sources through logic macros and evolutionary programs.
 - Expand benchmark comparisons against MORL baselines.

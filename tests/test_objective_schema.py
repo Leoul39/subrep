@@ -344,7 +344,7 @@ class TestSixDimensionalCandidateRecords:
         assert len(rec.delta_n) == 6
 
     def test_6d_candidate_rejects_empty_delta_n(self):
-        with pytest.raises(ValueError, match="non-empty"):
+        with pytest.raises(ValueError, match="length >= 2"):
             _make_candidate_record(delta_n=())
 
     def test_6d_candidate_rejects_non_finite(self):
@@ -741,10 +741,10 @@ class TestRemovedTwoDimensionalAssumptions:
         cert = _make_cert(delta_n=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6))
         assert len(cert.delta_n) == 6
 
-    def test_certificate_no_longer_rejects_1d_delta_n(self):
-        """Any non-empty N is valid."""
-        cert = _make_cert(delta_n=(0.5,))
-        assert len(cert.delta_n) == 1
+    def test_certificate_rejects_1d_delta_n(self):
+        """A single objective is not a trade-off; at least two are required."""
+        with pytest.raises(ValueError, match="length >= 2"):
+            _make_cert(delta_n=(0.5,))
 
     def test_candidate_record_no_longer_rejects_6d_delta_n(self):
         rec = _make_candidate_record(delta_n=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6))

@@ -81,8 +81,25 @@ def test_certificate_cds_nonzero_epsilon_fails():
         _sample_certificate(gate_type="CDS", epsilon=0.1)
 
 
+def test_certificate_wrong_delta_n_length_fails():
+    """delta_n must describe at least two objectives.
+
+    Previously this pinned "exactly 2" and used a length-3 vector as the
+    negative case. The certificate schema is now length-generic (M >= 2) so the
+    MDN's feasible support geometry can be certified at any objective count, so
+    the negative case is a vector that is too short to describe a trade-off.
+    """
+    with pytest.raises(ValueError):
+        _sample_certificate(delta_n=(0.1,))  # type: ignore[arg-type]
+
+
+def test_certificate_accepts_more_than_two_objectives():
+    """A three-objective certificate must be constructible."""
+    cert = _sample_certificate(delta_n=(0.1, 0.2, 0.3))  # type: ignore[arg-type]
+
+    assert cert.delta_n == (0.1, 0.2, 0.3)
 def test_certificate_empty_delta_n_fails():
-    """delta_n must be non-empty; any N >= 1 is accepted (N-dimensional)."""
+    """An empty delta_n is rejected; a three-objective one is accepted."""
     with pytest.raises((ValueError, TypeError)):
         Certificate(
             skill_id="s",
@@ -271,10 +288,13 @@ def test_query_by_weights_invalid_values_raise():
         store.query_by_weights([-0.1, 1.1])  # negative component
     with pytest.raises(ValueError):
         store.query_by_weights([0.5, np.inf])  # non-finite
-    # [0.5, 0.3, 0.2] is a valid 3D simplex but the store cert is 2D
-    # — raises due to dimension mismatch (B4 dimension-safe store queries).
-    with pytest.raises(ValueError, match="delta_n length"):
-        store.query_by_weights([0.5, 0.3, 0.2])
+    with pytest.raises(ValueError):
+        store.query_by_weights([1.0])  # too short to describe a trade-off
+
+    # A length-3 simplex vector is now VALID: the store must be queryable for
+    # certificates with more than two objectives. It used to be rejected on
+    # shape alone, which would have made M > 2 certificates unreachable.
+    assert store.query_by_weights([0.5, 0.3, 0.2]) is not None
 
 
 def test_query_by_weights_raises_even_when_store_empty():
@@ -350,3 +370,95 @@ def test_load_from_file_duplicate_skill_id_fails():
     finally:
         if file_path.exists():
             file_path.unlink()
+
+
+# --- Estimation evidence fields ---
+
+def _evidenced_certificate(**changes) -> Certificate:
+    fields = dict(
+        skill_id="torch_corridor_v1@dusk",
+        gate_type="PDS",
+        delta_r=0.0,
+        delta_n=(0.01, 0.0, -0.004, 0.0, 0.0, 0.06),
+        admission_margin=0.09,
+        epsilon=0.1,
+        timestamp="2026-10-24T09:00:00+00:00",
+        seed=0,
+        gamma=0.99,
+        baseline_id="protected_wait_v1",
+        environment="village_sim_v2",
+        episode_length=12,
+        version="1.0",
+        context_id="dusk",
+        n_rollouts=30,
+        rollout_seeds=(0, 1, 2, 3, 4, 5),
+        confidence_level=0.95,
+        lower_bound=-0.01,
+        return_scale=0.088,
+        evidence_ref="paired_evidence.jsonl#run=abc123",
+    )
+    fields.update(changes)
+    return Certificate(**fields)
+
+
+def test_evidence_fields_round_trip_through_metta_and_json():
+    cert = _evidenced_certificate()
+    assert atom_to_cert(parse_atom(serialize_atom(cert_to_atom(cert)))) == cert
+    assert Certificate.from_dict(cert.to_dict()) == cert
+
+
+def test_certificates_without_evidence_still_load():
+    data = _sample_certificate().to_dict()
+    for field in ("context_id", "n_rollouts", "rollout_seeds", "confidence_level",
+                  "lower_bound", "return_scale", "evidence_ref"):
+        data.pop(field)
+    cert = Certificate.from_dict(data)
+    assert cert.n_rollouts is None and cert.lower_bound is None
+
+
+@pytest.mark.parametrize("changes, message", [
+    ({"n_rollouts": 0}, "n_rollouts"),
+    ({"rollout_seeds": ()}, "rollout_seeds"),
+    ({"rollout_seeds": (1.5, 2)}, "rollout_seeds"),
+    ({"confidence_level": 1.0}, "confidence_level"),
+    ({"return_scale": 0.0}, "return_scale"),
+    ({"context_id": " "}, "context_id"),
+    ({"confidence_level": None}, "requires confidence_level"),
+    ({"lower_bound": -0.2}, "does not satisfy the PDS threshold"),
+])
+def test_inconsistent_evidence_is_rejected(changes, message):
+    with pytest.raises(ValueError, match=message):
+        _evidenced_certificate(**changes)
+
+
+def test_a_cds_certificate_needs_a_non_negative_lower_bound():
+    with pytest.raises(ValueError, match="CDS threshold"):
+        _evidenced_certificate(gate_type="CDS", epsilon=0.0, lower_bound=-0.001)
+    assert _evidenced_certificate(gate_type="CDS", epsilon=0.0, lower_bound=0.0).lower_bound == 0.0
+
+
+def test_evidenced_certificates_persist_in_the_store(tmp_path):
+    store = CertificateStore()
+    store.add(_evidenced_certificate())
+    path = tmp_path / "certs.metta"
+    store.save_to_file(path)
+    reloaded = CertificateStore()
+    reloaded.load_from_file(path)
+    assert reloaded.get_certificate("torch_corridor_v1@dusk") == _evidenced_certificate()
+
+
+def test_the_store_holds_many_six_objective_certificates(tmp_path):
+    store = CertificateStore()
+    for i in range(80):
+        assert store.add(_evidenced_certificate(skill_id=f"option_{i}@dusk"))
+    for i in range(0, 80, 4):
+        assert store.remove_skill(f"option_{i}@dusk")
+    path = tmp_path / "many.metta"
+    store.save_to_file(path)
+
+    reloaded = CertificateStore()
+    reloaded.load_from_file(path)
+    assert {c.skill_id: c for c in reloaded.load_all()} == {c.skill_id: c for c in store.load_all()}
+
+    rescanned = CertificateStore(space=reloaded._space)
+    assert rescanned.count() == 60

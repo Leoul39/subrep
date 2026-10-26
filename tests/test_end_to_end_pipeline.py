@@ -15,7 +15,7 @@ import pytest
 from demo.run_full_pipeline import (
     PDS_EPSILON,
     _noisy_ppo_policy,
-    _ppo_then_fixed_action_policy,
+    _ppo_then_burst_policy,
     run_pipeline,
 )
 
@@ -35,21 +35,35 @@ class _FakeEnv:
 class TestEndToEndPipeline:
     """Validate the complete pipeline execution with MDN and report integration."""
 
-    def test_ppo_then_fixed_policy_resets_between_episodes(self):
-        """Stateful demo policy should start each episode from step zero."""
-        policy = _ppo_then_fixed_action_policy(
-            lambda obs: (2, 0.8),
-            switch_step=3,
-            fixed_action=1,
+    def test_ppo_then_burst_policy_resets_between_episodes(self):
+        """Burst policy: PPO, then a bounded burst, then PPO again; reset restarts the count."""
+        policy = _ppo_then_burst_policy(
+        lambda obs: (2, 0.8),
+        burst_start=3,
+        burst_len=2,
+        fixed_action=1,
         )
         obs = np.zeros(8, dtype=np.float32)
 
+        # Steps 1-2: before the burst, follow PPO
         assert policy(obs) == (2, 0.8)
         assert policy(obs) == (2, 0.8)
+
+        # Steps 3-4: inside the burst window (3 <= step < 5), fixed action
         assert policy(obs) == (1, 1.0)
+        assert policy(obs) == (1, 1.0)
+
+        # Step 5 onward: the burst has ended, PPO takes back control
+        assert policy(obs) == (2, 0.8)
+        assert policy(obs) == (2, 0.8)
 
         policy.reset()
 
+        # After reset the counter is back at zero, so the whole pattern repeats
+        assert policy(obs) == (2, 0.8)
+        assert policy(obs) == (2, 0.8)
+        assert policy(obs) == (1, 1.0)
+        assert policy(obs) == (1, 1.0)
         assert policy(obs) == (2, 0.8)
 
     def test_noisy_policy_uses_unit_probability_when_base_probability_missing(self):
@@ -99,6 +113,66 @@ class TestEndToEndPipeline:
         assert "admitted" in content
         assert "rejected" in content
         assert "admission_rate" in content
+
+    def test_admitted_audit_entries_match_their_certificates(self):
+        """Admitted audit entries must mirror the certificate that was stored.
+
+        The report reads its audit context from the certificate rather than
+        re-asserting literals, so the two cannot drift. If the pipeline ever
+        certifies under a different weight region, the report follows instead of
+        continuing to claim FULL_SIMPLEX.
+        """
+        import json
+
+        run_pipeline()
+
+        report = json.loads(
+            Path("demo/artifacts/admission_report.json").read_text(encoding="utf-8")
+        )
+        library = json.loads(
+            Path("data/library.json").read_text(encoding="utf-8")
+        )
+        skills = library.get("skills", {})
+
+        admitted = [e for e in report["audit_entries"] if e["admitted"]]
+        assert admitted, "expected at least one admitted candidate"
+
+        for entry in admitted:
+            certificate = skills[entry["skill_id"]]["certificate"]
+
+            assert entry["weight_region_type"] == certificate["weight_region_type"]
+            assert entry["baseline_id"] == certificate["baseline_id"]
+            assert entry["environment"] == certificate["environment"]
+            assert entry["seed"] == certificate["seed"]
+            assert entry["episode_length"] == certificate["episode_length"]
+            # Support geometry is carried through verbatim, including when the
+            # certificate has none because it was certified on the full simplex.
+            assert entry["support_values"] == certificate["wx_support_values"]
+
+    def test_rejected_audit_entries_carry_evaluation_context(self):
+        """Rejected candidates have no certificate, so context comes from evaluation.
+
+        This is the path that cannot fall back on a stored certificate, so it
+        must be captured while the candidate is being evaluated.
+        """
+        import json
+
+        run_pipeline()
+
+        report = json.loads(
+            Path("demo/artifacts/admission_report.json").read_text(encoding="utf-8")
+        )
+        rejected = [e for e in report["audit_entries"] if not e["admitted"]]
+        assert rejected, "expected at least one rejected candidate"
+
+        for entry in rejected:
+            assert entry["baseline_id"] is not None
+            assert entry["environment"] is not None
+            assert entry["seed"] is not None
+            assert entry["episode_length"] is not None
+            # Both gates are still recorded even though no gate admitted.
+            assert {g["gate"] for g in entry["gate_evaluations"]} == {"CDS", "PDS"}
+            assert entry["rejection_category"] is not None
 
     def test_cert_store_matches_library_size(self):
         """Assert cert_store.count() == library_size from stats."""
